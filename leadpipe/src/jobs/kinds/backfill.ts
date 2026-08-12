@@ -391,32 +391,33 @@ async function backfillOperators(
     if (!data?.length) break;
     source_rows += data.length;
 
-    const rows = data
-      .map((r) => {
-        const domain = String(r[domainCol] ?? "")
-          .toLowerCase()
-          .trim();
-        if (!domain) return null;
-        return {
-          client_tag: ctx.job.client_tag,
-          domain,
-          company_name: (r[nameCol] ?? r.business_name ?? null) as string | null,
-          source: "permit_parcel.operators",
-          portfolio_value: r.portfolio_value ?? null,
-          segment: r.owner_segment ?? null,
-          phone: r.phone ?? null,
-          website: r.website ?? null,
-          address: r.operator_address ?? null,
-          in_icp: true,
-          metadata: {
-            from_operators: true,
-            confidence: r.confidence,
-            resolved: r.resolved,
-            distinct_llcs: r.distinct_llcs,
-          },
-        };
-      })
-      .filter((r): r is NonNullable<typeof r> => !!r);
+    const byDomain = new Map<string, Record<string, unknown>>();
+    for (const r of data) {
+      const domain = String(r[domainCol] ?? "")
+        .toLowerCase()
+        .trim();
+      if (!domain) continue;
+      // Last-wins within page; Postgres rejects duplicate conflict targets in one upsert.
+      byDomain.set(domain, {
+        client_tag: ctx.job.client_tag,
+        domain,
+        company_name: (r[nameCol] ?? r.business_name ?? null) as string | null,
+        source: "permit_parcel.operators",
+        portfolio_value: r.portfolio_value ?? null,
+        segment: r.owner_segment ?? null,
+        phone: r.phone ?? null,
+        website: r.website ?? null,
+        address: r.operator_address ?? null,
+        in_icp: true,
+        metadata: {
+          from_operators: true,
+          confidence: r.confidence,
+          resolved: r.resolved,
+          distinct_llcs: r.distinct_llcs,
+        },
+      });
+    }
+    const rows = [...byDomain.values()];
 
     for (let i = 0; i < rows.length; i += 200) {
       const chunk = rows.slice(i, i + 200);
@@ -481,31 +482,31 @@ async function writeOperatorCompanies(
   ctx: Ctx,
   rows: Record<string, unknown>[],
 ): Promise<CountResult> {
-  const mapped = rows
-    .map((r) => {
-      const domain = String(r.domain ?? "")
-        .toLowerCase()
-        .trim();
-      if (!domain) return null;
-      return {
-        client_tag: ctx.job.client_tag,
-        domain,
-        company_name: (r.operator_name ?? r.business_name ?? null) as string | null,
-        source: "permit_parcel.operators",
-        portfolio_value: r.portfolio_value ?? null,
-        segment: r.owner_segment ?? null,
-        phone: r.phone ?? null,
-        website: r.website ?? null,
-        address: r.operator_address ?? null,
-        in_icp: true,
-        metadata: {
-          from_operators: true,
-          confidence: r.confidence,
-          resolved: r.resolved,
-        },
-      };
-    })
-    .filter((r): r is NonNullable<typeof r> => !!r);
+  const byDomain = new Map<string, Record<string, unknown>>();
+  for (const r of rows) {
+    const domain = String(r.domain ?? "")
+      .toLowerCase()
+      .trim();
+    if (!domain) continue;
+    byDomain.set(domain, {
+      client_tag: ctx.job.client_tag,
+      domain,
+      company_name: (r.operator_name ?? r.business_name ?? null) as string | null,
+      source: "permit_parcel.operators",
+      portfolio_value: r.portfolio_value ?? null,
+      segment: r.owner_segment ?? null,
+      phone: r.phone ?? null,
+      website: r.website ?? null,
+      address: r.operator_address ?? null,
+      in_icp: true,
+      metadata: {
+        from_operators: true,
+        confidence: r.confidence,
+        resolved: r.resolved,
+      },
+    });
+  }
+  const mapped = [...byDomain.values()];
 
   let inserted = 0;
   for (let i = 0; i < mapped.length; i += 200) {
