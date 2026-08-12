@@ -135,15 +135,14 @@ npm run worker  # HTTP :8080 + job poller
 
 Deployed project serves Streamable HTTP MCP at `/mcp`.
 
-**Claude custom connector URL:**
+**Claude custom connector URL (no auth):**
 ```
 https://leadpipe-production-0df5.up.railway.app/mcp
 ```
 
-Auth: set header `Authorization: Bearer <LEADPIPE_MCP_TOKEN>`  
-(or append `?token=<LEADPIPE_MCP_TOKEN>` if the client only supports URL auth).
-
 Health check: `GET https://leadpipe-production-0df5.up.railway.app/health`
+
+Optional: set `LEADPIPE_MCP_TOKEN` on Railway to require Bearer auth again.
 
 ```bash
 cd leadpipe

@@ -21,10 +21,10 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
   let running = false;
   let stopping = false;
 
-  if (!config.mcpAuthToken && !config.mcpAllowUnauthenticated) {
-    console.error(
-      "[leadpipe] WARNING: LEADPIPE_MCP_TOKEN unset and unauth disabled — /mcp will return 401. Set LEADPIPE_MCP_TOKEN or LEADPIPE_MCP_ALLOW_UNAUTH=1",
-    );
+  if (config.mcpAuthToken && !config.mcpAllowUnauthenticated) {
+    console.error("[leadpipe] /mcp auth enabled (LEADPIPE_MCP_TOKEN)");
+  } else {
+    console.error("[leadpipe] /mcp is open (no auth)");
   }
 
   const server = http.createServer(async (req, res) => {

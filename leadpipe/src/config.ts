@@ -135,9 +135,11 @@ export function loadConfig(): Config {
     exportTtlSeconds: num("LEADPIPE_EXPORT_TTL_SECONDS", 86400),
     costs,
     mcpAuthToken: process.env.LEADPIPE_MCP_TOKEN || process.env.MCP_AUTH_TOKEN,
+    // No token configured → open /mcp (Claude remote URL). Set LEADPIPE_MCP_TOKEN to re-enable auth.
     mcpAllowUnauthenticated:
       process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "1" ||
-      process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "true",
+      process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "true" ||
+      !(process.env.LEADPIPE_MCP_TOKEN || process.env.MCP_AUTH_TOKEN),
     getleadsApiKey: process.env.GETLEADS_API_KEY,
     aiarkApiKey: process.env.AIARK_API_KEY,
     leadmagicApiKey: process.env.LEADMAGIC_API_KEY,

@@ -140,15 +140,12 @@ export function createHttpMcpHandler(
 
 function authorizeMcp(req: IncomingMessage, config: Config): boolean {
   const expected = config.mcpAuthToken;
-  if (!expected) {
-    // Allow unauthenticated only when explicitly opted in (local/dev)
-    return config.mcpAllowUnauthenticated;
-  }
+  // No token configured → open access
+  if (!expected || config.mcpAllowUnauthenticated) return true;
   const header = req.headers.authorization ?? "";
   if (header === `Bearer ${expected}`) return true;
   const alt = req.headers["x-leadpipe-token"];
   if (typeof alt === "string" && alt === expected) return true;
-  // Also accept ?token= for Claude connectors that only support URL auth
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.searchParams.get("token") === expected) return true;
