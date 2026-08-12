@@ -11,7 +11,6 @@ import {
   estimateEnrichCost,
   estimateFindDmsCost,
   estimateVerifyCost,
-  gateCost,
 } from "./lib/cost.js";
 import { applyCompanyFilter, applyContactFilter, type LeadFilter } from "./lib/filters.js";
 import { validateBackfillParams } from "./lib/backfill_params.js";
