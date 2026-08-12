@@ -50,6 +50,9 @@ export interface EmployeeRecord {
   job_title?: string;
   linkedin_url?: string;
   email?: string;
+  country_code?: string;
+  country?: string;
+  location?: string;
   raw?: unknown;
 }
 
@@ -124,6 +127,82 @@ export function createVendors(config: Config) {
       });
     },
 
+    /**
+     * LeadMagic Employee Finder — ~0.05 credits per person returned (free if empty).
+     * Proven path for find_dms_by_title (title filter in-process, then email survivors).
+     */
+    async leadmagicEmployeeFinder(
+      domain: string,
+      opts?: { limit?: number },
+    ): Promise<EmployeeRecord[]> {
+      if (!config.leadmagicApiKey) {
+        throw new VendorError("leadmagic", "LEADMAGIC_API_KEY not configured");
+      }
+      const data = await jsonFetch<{
+        data?: Array<Record<string, unknown>>;
+        employees?: Array<Record<string, unknown>>;
+        results?: Array<Record<string, unknown>>;
+      }>("leadmagic", "https://api.leadmagic.io/v1/people/employee-finder", {
+        method: "POST",
+        headers: {
+          "X-API-Key": config.leadmagicApiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          company_domain: domain,
+          limit: opts?.limit ?? 10,
+        }),
+      });
+      const rows = data.data ?? data.employees ?? data.results ?? [];
+      return rows.map((r) => ({
+        first_name: (r.first_name as string) ?? undefined,
+        last_name: (r.last_name as string) ?? undefined,
+        job_title:
+          (r.job_title as string) ?? (r.title as string) ?? undefined,
+        linkedin_url:
+          (r.profile_url as string) ??
+          (r.linkedin_url as string) ??
+          undefined,
+        email: (r.email as string) ?? undefined,
+        country_code: (r.country_code as string) ?? undefined,
+        country: (r.country as string) ?? undefined,
+        location: (r.location as string) ?? undefined,
+        raw: r,
+      }));
+    },
+
+    /** LeadMagic Email Finder — 1 credit on hit, 0 when null. */
+    async leadmagicWorkEmailFinder(input: {
+      domain: string;
+      first_name: string;
+      last_name: string;
+    }): Promise<EmailResult> {
+      if (!config.leadmagicApiKey) {
+        throw new VendorError("leadmagic", "LEADMAGIC_API_KEY not configured");
+      }
+      const data = await jsonFetch<{
+        email?: string | null;
+        status?: string | null;
+        message?: string;
+      }>("leadmagic", "https://api.leadmagic.io/v1/people/email-finder", {
+        method: "POST",
+        headers: {
+          "X-API-Key": config.leadmagicApiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          first_name: input.first_name,
+          last_name: input.last_name,
+          domain: input.domain,
+        }),
+      });
+      return {
+        email: data.email ?? null,
+        status: data.status ?? (data.email ? "valid" : "not_found"),
+        raw: data,
+      };
+    },
+
     async leadmagicEnrich(input: {
       domain: string;
       first_name?: string;
@@ -133,18 +212,27 @@ export function createVendors(config: Config) {
       if (!config.leadmagicApiKey) {
         throw new VendorError("leadmagic", "LEADMAGIC_API_KEY not configured");
       }
-      return jsonFetch<EmailResult>(
-        "leadmagic",
-        "https://api.leadmagic.io/email-finder",
-        {
-          method: "POST",
-          headers: {
-            "X-API-Key": config.leadmagicApiKey,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(input),
+      const data = await jsonFetch<{
+        email?: string | null;
+        status?: string | null;
+      }>("leadmagic", "https://api.leadmagic.io/v1/people/email-finder", {
+        method: "POST",
+        headers: {
+          "X-API-Key": config.leadmagicApiKey,
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          first_name: input.first_name ?? "",
+          last_name: input.last_name ?? "",
+          domain: input.domain,
+          linkedin_url: input.linkedin_url,
+        }),
+      });
+      return {
+        email: data.email ?? null,
+        status: data.status ?? (data.email ? "valid" : "not_found"),
+        raw: data,
+      };
     },
 
     async fullenrichEnrich(input: {

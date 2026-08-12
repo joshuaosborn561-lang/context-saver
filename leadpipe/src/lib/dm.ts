@@ -49,6 +49,25 @@ export function isUsPerson(record: {
       country === "united states of america"
     );
   }
+  const loc = (record.location ?? "").toString().trim().toLowerCase();
+  if (loc) {
+    // Drop obvious non-US locations (Brazil/India staff at DFW companies)
+    if (
+      /\b(brazil|brasil|india|mexico|canada|uk|united kingdom|philippines|nigeria|pakistan|argentina|colombia|chile|peru)\b/.test(
+        loc,
+      )
+    ) {
+      return false;
+    }
+    if (
+      /\b(united states|usa|\bu\.?s\.?a\.?\b|\bus\b)/.test(loc) ||
+      /,\s*(al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b/.test(
+        loc,
+      )
+    ) {
+      return true;
+    }
+  }
   // Unknown country → keep (don't drop); only drop explicit non-US
   return true;
 }

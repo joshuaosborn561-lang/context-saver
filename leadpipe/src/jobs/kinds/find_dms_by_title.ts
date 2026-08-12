@@ -61,6 +61,8 @@ export const runFindDmsByTitle: JobHandler = {
     const titleFn =
       titleMode === "exec" ? isDecisionMakerTitle : isRoofRelevantTitle;
 
+    // LeadMagic economics: ~0.05 credits/employee returned; 1 credit/email hit.
+    // Config USD estimates stay under getleads_* keys for plan compatibility.
     const unitFinder = ctx.config.costs.getleads_employee_finder ?? 0.005;
     const unitEmail = ctx.config.costs.getleads_work_email_finder ?? 0.05;
     let cost = 0;
@@ -69,22 +71,21 @@ export const runFindDmsByTitle: JobHandler = {
     let dms = 0;
     let emails = 0;
 
-    const employees = await ctx.vendors.getleadsEmployeeFinder(domain);
-    // employee_finder is ~0.05 credits/person returned; $0 when empty
+    const employees = await ctx.vendors.leadmagicEmployeeFinder(domain, {
+      limit: 10,
+    });
     cost += employees.length * unitFinder;
     employeesFound = employees.length;
 
     await storeRawPayload(ctx.db, {
       job_id: ctx.job.id,
-      vendor: "getleads",
+      vendor: "leadmagic",
       entity_key: `employee_finder:${domain}`,
       payload: employees,
     });
 
     const dmCandidates = employees.filter(
-      (e) =>
-        titleFn(e.job_title) &&
-        isUsPerson(e as { country_code?: string; country?: string }),
+      (e) => titleFn(e.job_title) && isUsPerson(e),
     );
     dms = dmCandidates.length;
 
@@ -96,7 +97,7 @@ export const runFindDmsByTitle: JobHandler = {
 
       if (!email && (first || last)) {
         try {
-          const found = await ctx.vendors.getleadsWorkEmailFinder({
+          const found = await ctx.vendors.leadmagicWorkEmailFinder({
             domain,
             first_name: first,
             last_name: last,
@@ -104,7 +105,7 @@ export const runFindDmsByTitle: JobHandler = {
           cost += unitEmail;
           await storeRawPayload(ctx.db, {
             job_id: ctx.job.id,
-            vendor: "getleads",
+            vendor: "leadmagic",
             entity_key: `work_email:${domain}:${first}:${last}`,
             payload: found,
           });
@@ -128,8 +129,8 @@ export const runFindDmsByTitle: JobHandler = {
             email,
             email_status: emailStatus,
             linkedin_url: person.linkedin_url ?? null,
-            source_tool: "getleads",
-            source_tier: "getleads",
+            source_tool: "leadmagic",
+            source_tier: "leadmagic",
             updated_at: new Date().toISOString(),
           },
           { onConflict: "client_tag,domain,email" },
@@ -155,8 +156,8 @@ export const runFindDmsByTitle: JobHandler = {
             email: null,
             email_status: emailStatus,
             linkedin_url: person.linkedin_url ?? null,
-            source_tool: "getleads",
-            source_tier: "getleads",
+            source_tool: "leadmagic",
+            source_tier: "leadmagic",
             metadata: { from_job: ctx.job.id },
           });
         }
