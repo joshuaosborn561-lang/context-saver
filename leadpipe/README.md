@@ -131,7 +131,19 @@ npm run worker  # HTTP :8080 + job poller
 }
 ```
 
-### 5. Railway
+### 5. Railway (remote MCP URL for Claude)
+
+Deployed project serves Streamable HTTP MCP at `/mcp`.
+
+**Claude custom connector URL:**
+```
+https://leadpipe-production-0df5.up.railway.app/mcp
+```
+
+Auth: set header `Authorization: Bearer <LEADPIPE_MCP_TOKEN>`  
+(or append `?token=<LEADPIPE_MCP_TOKEN>` if the client only supports URL auth).
+
+Health check: `GET https://leadpipe-production-0df5.up.railway.app/health`
 
 ```bash
 cd leadpipe
@@ -139,7 +151,7 @@ railway up
 # Set env vars in Railway dashboard (same as .env.example)
 ```
 
-Dockerfile + `railway.toml` included. Health check: `GET /health`.
+Dockerfile + `railway.toml` included.
 
 ## Client tags
 
