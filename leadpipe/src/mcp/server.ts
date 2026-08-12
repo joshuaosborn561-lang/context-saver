@@ -87,6 +87,9 @@ export function createHttpMcpHandler(
         if (!sessionId && isInitializeRequest(body)) {
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
+            // JSON responses are more reliable with Claude.ai custom connectors
+            // than SSE streams behind some proxies.
+            enableJsonResponse: true,
             onsessioninitialized: (id) => {
               transports.set(id, transport);
             },

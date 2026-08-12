@@ -36,22 +36,58 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
           ok: true,
           service: "leadpipe",
           mcp: "/mcp",
+          mcp_root: "/",
+          tools: [
+            "lp_plan",
+            "lp_run",
+            "lp_status",
+            "lp_inventory",
+            "lp_sample",
+            "lp_export",
+          ],
           ts: new Date().toISOString(),
         });
         return;
       }
 
-      if (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/")) {
-        // CORS preflight for browser-based MCP clients
+      // Claude.ai sometimes POSTs MCP to the connector base URL (/), not /mcp.
+      const isMcpPath =
+        url.pathname === "/mcp" ||
+        url.pathname.startsWith("/mcp/") ||
+        url.pathname === "/";
+
+      if (isMcpPath) {
         if (req.method === "OPTIONS") {
           res.writeHead(204, {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
             "Access-Control-Allow-Headers":
-              "Content-Type, Authorization, mcp-session-id, x-leadpipe-token",
+              "Content-Type, Authorization, mcp-session-id, x-leadpipe-token, Accept",
             "Access-Control-Expose-Headers": "mcp-session-id",
           });
           res.end();
+          return;
+        }
+        // Keep browser GET / as a tiny discoverability page; MCP GET needs SSE/JSON accept.
+        if (
+          url.pathname === "/" &&
+          req.method === "GET" &&
+          !String(req.headers.accept ?? "").includes("text/event-stream") &&
+          !String(req.headers.accept ?? "").includes("application/json")
+        ) {
+          json(res, 200, {
+            service: "leadpipe",
+            mcp_endpoints: ["/mcp", "/"],
+            health: "/health",
+            tools: [
+              "lp_plan",
+              "lp_run",
+              "lp_status",
+              "lp_inventory",
+              "lp_sample",
+              "lp_export",
+            ],
+          });
           return;
         }
         res.setHeader("Access-Control-Allow-Origin", "*");
