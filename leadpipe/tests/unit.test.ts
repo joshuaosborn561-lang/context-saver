@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { isDecisionMakerTitle } from "../src/lib/dm.js";
+import { isDecisionMakerTitle, isRoofRelevantTitle } from "../src/lib/dm.js";
+import { validateBackfillParams } from "../src/lib/backfill_params.js";
 import {
   estimateEnrichCost,
   estimateFindDmsCost,
@@ -35,6 +36,60 @@ describe("isDecisionMakerTitle", () => {
     assert.equal(isDecisionMakerTitle(""), false);
     assert.equal(isDecisionMakerTitle(null), false);
     assert.equal(isDecisionMakerTitle("Marketing Coordinator"), false);
+  });
+});
+
+describe("roof title filter", () => {
+  it("keeps property/facilities roles", () => {
+    assert.equal(isRoofRelevantTitle("Property Manager"), true);
+    assert.equal(isRoofRelevantTitle("Director of Facilities"), true);
+    assert.equal(isRoofRelevantTitle("Asset Manager"), true);
+    assert.equal(isRoofRelevantTitle("Chief Engineer"), true);
+  });
+  it("drops CFO/HR/legal", () => {
+    assert.equal(isRoofRelevantTitle("CFO"), false);
+    assert.equal(isRoofRelevantTitle("General Counsel"), false);
+    assert.equal(isRoofRelevantTitle("HR Manager"), false);
+    assert.equal(isRoofRelevantTitle("Marketing Director"), false);
+  });
+});
+
+describe("backfill param validation", () => {
+  it("rejects unknown keys with expected list", () => {
+    const v = validateBackfillParams({ source: "gc", foo: 1 });
+    assert.equal(v.ok, false);
+    if (!v.ok) assert.match(v.error, /Unknown backfill params: foo/);
+  });
+  it("accepts source=gc as companies+contacts", () => {
+    const v = validateBackfillParams({ source: "gc" });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["gc_companies", "gc_contacts"]);
+  });
+  it("accepts explicit schema/tables shape", () => {
+    const v = validateBackfillParams({
+      source_project: "azpapwtnrbzywlnxxecz",
+      source_schema: "gc",
+      source_tables: ["companies", "contacts"],
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["gc_companies", "gc_contacts"]);
+  });
+  it("accepts operators with where/owner_segments", () => {
+    const v = validateBackfillParams({
+      source_project: "kemvxzhcxvynmoutwdrh",
+      source_schema: "permit_parcel",
+      source_table: "operators",
+      domain_column: "domain",
+      name_column: "operator_name",
+      where:
+        "domain is not null and domain <> '' and owner_segment in ('private','religious_nonprofit')",
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["permit_parcel.operators"]);
+  });
+  it("rejects empty params", () => {
+    const v = validateBackfillParams({});
+    assert.equal(v.ok, false);
   });
 });
 

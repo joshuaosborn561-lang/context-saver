@@ -24,9 +24,22 @@ When working on leads, campaigns, enrichment, Smartlead imports, or anything tha
 5. Success = `useful_output_count` / verified live membership — not rows processed.
 6. If LeadPipe MCP is unavailable, say so and stop — do not fall back to dumping data into context.
 
+## Backfill (required before find_dms)
+
+Two Supabase projects — do not mix them:
+
+| Source | Project | Params |
+|--------|---------|--------|
+| `gc.companies` + `gc.contacts` | `azpapwtnrbzywlnxxecz` | `{ "source": "gc" }` or `{ "source_schema": "gc", "source_tables": ["companies","contacts"] }` |
+| `permit_parcel.operators` (domains only) | `kemvxzhcxvynmoutwdrh` | `{ "source": "permit_parcel.operators", "owner_segments": ["private","religious_nonprofit"] }` |
+
+Unknown param keys are rejected. Zero source rows → job **failed** (never `running` with `rows_total: 0`).
+
 ## Example prompts Claude should turn into tools
 
 - "Inventory Peterson" → `lp_inventory`
+- "Backfill Peterson from gc" → `lp_run(backfill, params={source:"gc"})`
+- "Find roof DMs for Peterson, cap $20" → `lp_plan` then `lp_run(find_dms_by_title, …)`
 - "Enrich Peterson DMs missing email, stop at LeadMagic, cap $20" → `lp_plan` then `lp_run(enrich_contacts, …)`
 - "Requeue the four remaining Culture Fits campaigns from storage" → `lp_run(import_smartlead, …)`
 - "How's job &lt;id&gt;?" → `lp_status`

@@ -1,14 +1,24 @@
 import type { JobHandler } from "../runner.js";
 import { seedEntityKeys, storeRawPayload } from "../runner.js";
-import { isDecisionMakerTitle } from "../../lib/dm.js";
+import {
+  isRoofRelevantTitle,
+  isDecisionMakerTitle,
+  isUsPerson,
+} from "../../lib/dm.js";
 
 /**
  * find_dms_by_title — biggest immediate win.
- * Bulk employee_finder → SQL/title filter (free) → work_email_finder on survivors only.
+ * Bulk employee_finder → title filter in-process (free) → work_email_finder on survivors only.
+ *
+ * Default title mode is "roof" (property/facilities ICP). Pass params.title_mode="exec"
+ * for broad owner/CEO/VP matching.
  */
 export const runFindDmsByTitle: JobHandler = {
   async seed(ctx) {
-    const params = ctx.job.params as { domains?: string[] };
+    const params = ctx.job.params as {
+      domains?: string[];
+      only_missing_dm?: boolean;
+    };
 
     let domains = params.domains ?? [];
     if (domains.length === 0) {
@@ -19,14 +29,38 @@ export const runFindDmsByTitle: JobHandler = {
         .not("domain", "is", null);
       if (error) throw new Error(error.message);
       domains = (data ?? []).map((r) => r.domain as string).filter(Boolean);
+
+      // Default: skip companies that already have a DM-grade contact with email
+      if (params.only_missing_dm !== false) {
+        const { data: haveDm } = await ctx.db
+          .from("contacts")
+          .select("domain")
+          .eq("client_tag", ctx.job.client_tag)
+          .eq("is_dm", true)
+          .not("email", "is", null);
+        const have = new Set(
+          (haveDm ?? []).map((r) => String(r.domain ?? "").toLowerCase()),
+        );
+        domains = domains.filter((d) => !have.has(d.toLowerCase()));
+      }
     }
 
     const unique = [...new Set(domains.map((d) => d.toLowerCase().trim()))];
+    if (unique.length === 0) {
+      throw new Error(
+        "find_dms_by_title: zero companies to process (lp.companies empty or all already have DM emails). Run backfill first.",
+      );
+    }
     await seedEntityKeys(ctx.db, ctx.job.id, unique);
     return { rows_total: unique.length };
   },
 
   async processRow(ctx, domain) {
+    const params = ctx.job.params as { title_mode?: string };
+    const titleMode = params.title_mode === "exec" ? "exec" : "roof";
+    const titleFn =
+      titleMode === "exec" ? isDecisionMakerTitle : isRoofRelevantTitle;
+
     const unitFinder = ctx.config.costs.getleads_employee_finder ?? 0.005;
     const unitEmail = ctx.config.costs.getleads_work_email_finder ?? 0.05;
     let cost = 0;
@@ -36,7 +70,8 @@ export const runFindDmsByTitle: JobHandler = {
     let emails = 0;
 
     const employees = await ctx.vendors.getleadsEmployeeFinder(domain);
-    cost += Math.max(employees.length, 1) * unitFinder;
+    // employee_finder is ~0.05 credits/person returned; $0 when empty
+    cost += employees.length * unitFinder;
     employeesFound = employees.length;
 
     await storeRawPayload(ctx.db, {
@@ -46,8 +81,10 @@ export const runFindDmsByTitle: JobHandler = {
       payload: employees,
     });
 
-    const dmCandidates = employees.filter((e) =>
-      isDecisionMakerTitle(e.job_title),
+    const dmCandidates = employees.filter(
+      (e) =>
+        titleFn(e.job_title) &&
+        isUsPerson(e as { country_code?: string; country?: string }),
     );
     dms = dmCandidates.length;
 

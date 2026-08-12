@@ -64,18 +64,43 @@ export async function executeJob(ctx: JobContext): Promise<void> {
     error: null,
   } as Partial<JobRow>);
 
-  // Seed rows if first run / interrupted with empty ledger
-  const seed = await handler.seed(ctx);
-  if (seed.rows_total > 0) {
-    // seed handler is responsible for upserting; ensure counters
+  try {
+    const seed = await handler.seed(ctx);
+    if (seed.rows_total === 0) {
+      await updateJob(ctx.db, ctx.job.id, {
+        status: "failed",
+        error:
+          "Seed produced zero work items (rows_total=0). Refusing silent no-op.",
+        rows_total: 0,
+        finished_at: new Date().toISOString(),
+        results_summary: {
+          useful_output_count: 0,
+          ok: false,
+          note: "Zero source rows / work items — failure.",
+        },
+      } as Partial<JobRow>);
+      return;
+    }
     await refreshJobCounters(ctx.db, ctx.job.id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await updateJob(ctx.db, ctx.job.id, {
+      status: "failed",
+      error: message.slice(0, 2000),
+      finished_at: new Date().toISOString(),
+      results_summary: {
+        useful_output_count: 0,
+        ok: false,
+        note: "Failed during seed — params or source access.",
+      },
+    } as Partial<JobRow>);
+    return;
   }
 
   let useful = 0;
   let costActual = Number(ctx.job.cost_actual_usd ?? 0);
   const ceiling = Number(ctx.job.cost_ceiling_usd ?? ctx.config.defaultCostCeilingUsd);
 
-  // Process pending rows in batches
   for (;;) {
     const batch = await fetchPendingJobRows(ctx.db, ctx.job.id, 25);
     if (batch.length === 0) break;
@@ -124,32 +149,40 @@ export async function executeJob(ctx: JobContext): Promise<void> {
     await refreshJobCounters(ctx.db, ctx.job.id);
   }
 
-  // Refresh job from DB for summary
-  const summary = await handler.summarize({ ...ctx, job: { ...ctx.job, cost_actual_usd: costActual } });
+  const summary = await handler.summarize({
+    ...ctx,
+    job: { ...ctx.job, cost_actual_usd: costActual },
+  });
   const usefulOutput =
     typeof summary.useful_output_count === "number"
       ? summary.useful_output_count
       : useful;
 
+  // Zero useful output is ALWAYS a failure — never a quiet success.
   const verifyFailed = summary.ok === false;
-  const finalStatus = verifyFailed ? "failed" : "completed";
+  const zeroUseful = usefulOutput === 0;
+  const finalStatus = verifyFailed || zeroUseful ? "failed" : "completed";
+  const errorMsg = verifyFailed
+    ? String(
+        Array.isArray(summary.verification_failures)
+          ? (summary.verification_failures as string[]).join("; ")
+          : "Post-run verification failed",
+      ).slice(0, 2000)
+    : zeroUseful
+      ? "Job finished with useful_output_count=0 — treated as failure (no silent success)."
+      : null;
 
   await updateJob(ctx.db, ctx.job.id, {
     status: finalStatus,
     cost_actual_usd: costActual,
-    error: verifyFailed
-      ? String(
-          Array.isArray(summary.verification_failures)
-            ? (summary.verification_failures as string[]).join("; ")
-            : "Post-run verification failed",
-        ).slice(0, 2000)
-      : null,
+    error: errorMsg,
     results_summary: {
       ...summary,
       useful_output_count: usefulOutput,
+      ok: finalStatus === "completed",
       note:
-        usefulOutput === 0
-          ? "Completed with zero useful output — not a success by LeadPipe standards."
+        finalStatus === "failed"
+          ? errorMsg
           : summary.note,
     },
     finished_at: new Date().toISOString(),

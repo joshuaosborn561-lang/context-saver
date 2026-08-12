@@ -73,6 +73,9 @@ export interface Config {
   millionverifierApiKey?: string;
   no2bounceApiKey?: string;
   smartleadApiKey?: string;
+  /** Maps / permit_parcel project (kemvxzhcxvynmoutwdrh) */
+  mapsSupabaseUrl?: string;
+  mapsSupabaseServiceKey?: string;
   /** Forbidden: PDL must never be configured */
   peopleDataLabsBlocked: true;
 }
@@ -147,6 +150,13 @@ export function loadConfig(): Config {
     millionverifierApiKey: process.env.MILLIONVERIFIER_API_KEY,
     no2bounceApiKey: process.env.NO2BOUNCE_API_KEY,
     smartleadApiKey: process.env.SMARTLEAD_API_KEY,
+    mapsSupabaseUrl:
+      process.env.MAPS_SUPABASE_URL ?? process.env.LEADS_SUPABASE_URL,
+    mapsSupabaseServiceKey:
+      process.env.MAPS_SUPABASE_SERVICE_ROLE_KEY ??
+      process.env.LEADS_SUPABASE_SERVICE_ROLE_KEY ??
+      process.env.MAPS_SUPABASE_ANON_KEY ??
+      process.env.LEADS_SUPABASE_ANON_KEY,
     peopleDataLabsBlocked: true,
   };
 }

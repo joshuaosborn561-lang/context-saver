@@ -14,6 +14,7 @@ import {
   gateCost,
 } from "./lib/cost.js";
 import { applyCompanyFilter, applyContactFilter, type LeadFilter } from "./lib/filters.js";
+import { validateBackfillParams } from "./lib/backfill_params.js";
 
 const SAMPLE_MAX = 10;
 
@@ -502,10 +503,13 @@ function sanitizeParams(
       throw new Error(`Invalid max_tier: ${max}`);
     }
     out.max_tier = max;
-    // Never allow PDL
     if (String(out.vendor ?? "").toLowerCase().includes("pdl")) {
       throw new Error("People Data Labs is forbidden");
     }
+  }
+  if (kind === "backfill") {
+    const v = validateBackfillParams(out);
+    if (!v.ok) throw new Error(v.error);
   }
   return out;
 }
