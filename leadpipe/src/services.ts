@@ -105,10 +105,13 @@ export function createServices(db: Db, config: Config): Services {
 
       if (goal.includes("dm") || goal.includes("decision") || goal.includes("title")) {
         recommended = "find_dms_by_title";
-        candidate_count = await countCompanies(db, filters);
+        candidate_count = await countCompaniesMissingDm(db, input.client_tag);
         const e = estimateFindDmsCost(config, candidate_count);
         estimate = { ...e, breakdown: e.breakdown };
         notes.push(...e.notes);
+        notes.push(
+          "candidate_count = companies lacking a DM-grade contact with email.",
+        );
       } else if (goal.includes("enrich") || goal.includes("email")) {
         recommended = "enrich_contacts";
         const f = { ...filters, missing_email: true };
@@ -492,6 +495,32 @@ async function countCompanies(db: Db, filter: LeadFilter): Promise<number> {
   return count ?? 0;
 }
 
+/** Companies with no DM-grade emailed contact — what find_dms_by_title will seed. */
+async function countCompaniesMissingDm(
+  db: Db,
+  clientTag: string,
+): Promise<number> {
+  const { data: companies, error } = await db
+    .from("companies")
+    .select("domain")
+    .eq("client_tag", clientTag)
+    .not("domain", "is", null);
+  if (error) throw new Error(error.message);
+  const { data: haveDm, error: e2 } = await db
+    .from("contacts")
+    .select("domain")
+    .eq("client_tag", clientTag)
+    .eq("is_dm", true)
+    .not("email", "is", null);
+  if (e2) throw new Error(e2.message);
+  const have = new Set(
+    (haveDm ?? []).map((r) => String(r.domain ?? "").toLowerCase()),
+  );
+  return (companies ?? []).filter(
+    (c) => c.domain && !have.has(String(c.domain).toLowerCase()),
+  ).length;
+}
+
 function sanitizeParams(
   kind: JobKind,
   params: Record<string, unknown>,
@@ -525,8 +554,7 @@ async function estimateForKind(
     case "find_dms_by_title": {
       const domains = (params.domains as string[] | undefined) ?? [];
       const count =
-        domains.length ||
-        (await countCompanies(db, { client_tag: clientTag }));
+        domains.length || (await countCompaniesMissingDm(db, clientTag));
       return estimateFindDmsCost(config, count);
     }
     case "enrich_contacts": {
