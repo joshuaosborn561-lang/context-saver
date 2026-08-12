@@ -223,27 +223,13 @@ export function createServices(db: Db, config: Config): Services {
         params,
       );
 
+      // approve_cost_usd is a hard spend ceiling during execution, not a
+      // "must cover the full-universe estimate" gate. Jobs start and stop
+      // when actual spend exceeds the ceiling (runner uses strict >).
       const ceiling =
         input.approve_cost_usd ?? config.defaultCostCeilingUsd;
-      const gate = gateCost(estimate.estimated_cost_usd, input.approve_cost_usd, ceiling);
-
-      if (!gate.ok) {
-        const blocked = await insertJob(db, {
-          client_tag: input.client_tag,
-          kind: input.job_kind,
-          params,
-          params_hash,
-          cost_estimate_usd: estimate.estimated_cost_usd,
-          cost_ceiling_usd: ceiling,
-          status: "cost_blocked",
-          error: gate.reason,
-        });
-        return {
-          job_id: blocked.id,
-          status: "cost_blocked",
-          estimated_cost_usd: estimate.estimated_cost_usd,
-          error: gate.reason,
-        };
+      if (!(ceiling >= 0) || !Number.isFinite(ceiling)) {
+        throw new Error(`Invalid approve_cost_usd / ceiling: ${ceiling}`);
       }
 
       const job = await insertJob(db, {
@@ -260,6 +246,13 @@ export function createServices(db: Db, config: Config): Services {
         job_id: job.id,
         status: job.status,
         estimated_cost_usd: estimate.estimated_cost_usd,
+        ...(estimate.estimated_cost_usd > ceiling
+          ? {
+              error:
+                `Note: estimate $${estimate.estimated_cost_usd.toFixed(4)} > ceiling $${ceiling.toFixed(4)}; ` +
+                `job will run until the ceiling is hit then stop as cost_blocked.`,
+            }
+          : {}),
       };
     },
 
