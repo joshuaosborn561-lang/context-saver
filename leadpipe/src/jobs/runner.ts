@@ -106,10 +106,11 @@ export async function executeJob(ctx: JobContext): Promise<void> {
     if (batch.length === 0) break;
 
     for (const row of batch) {
-      if (costActual >= ceiling) {
+      // Strict >: approve_cost_usd=0 must allow free work (backfill). >= 0 blocked instantly.
+      if (costActual > ceiling) {
         await updateJob(ctx.db, ctx.job.id, {
           status: "cost_blocked",
-          error: `Stopped: actual cost $${costActual.toFixed(4)} hit ceiling $${ceiling.toFixed(4)}`,
+          error: `Stopped: actual cost $${costActual.toFixed(4)} exceeded ceiling $${ceiling.toFixed(4)}`,
           cost_actual_usd: costActual,
           finished_at: new Date().toISOString(),
         } as Partial<JobRow>);
