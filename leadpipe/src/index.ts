@@ -3,9 +3,9 @@
  * LeadPipe entrypoint.
  *
  * Modes:
- *   --mode mcp     Stdio MCP server (Claude/Cursor tools)
- *   --mode worker  HTTP + job poller (Railway)
- *   --mode both    Worker HTTP + note that MCP is typically separate process
+ *   --mode mcp     Stdio MCP (local Cursor)
+ *   --mode worker  HTTP + /mcp Streamable HTTP + job poller (Railway)
+ *   --mode both    Same as worker (HTTP MCP + poller)
  */
 
 import { loadConfig } from "./config.js";
@@ -24,13 +24,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (config.mode === "worker") {
-    await startWorker(db, config);
-    return;
-  }
-
-  // both: run worker; MCP over stdio only when explicitly requested
-  // (Railway deploys worker; local Cursor uses --mode mcp)
+  // worker | both → HTTP with Streamable MCP at /mcp + job poller
   await startWorker(db, config);
 }
 

@@ -61,6 +61,10 @@ export interface Config {
   exportBucket: string;
   exportTtlSeconds: number;
   costs: Record<string, number>;
+  /** Bearer token required for remote /mcp (Claude URL connector) */
+  mcpAuthToken?: string;
+  /** Allow unauthenticated /mcp — local only */
+  mcpAllowUnauthenticated: boolean;
   /** Vendor API keys — optional until the job kind is used */
   getleadsApiKey?: string;
   aiarkApiKey?: string;
@@ -130,6 +134,10 @@ export function loadConfig(): Config {
     exportBucket: process.env.LEADPIPE_EXPORT_BUCKET ?? "lp-exports",
     exportTtlSeconds: num("LEADPIPE_EXPORT_TTL_SECONDS", 86400),
     costs,
+    mcpAuthToken: process.env.LEADPIPE_MCP_TOKEN || process.env.MCP_AUTH_TOKEN,
+    mcpAllowUnauthenticated:
+      process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "1" ||
+      process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "true",
     getleadsApiKey: process.env.GETLEADS_API_KEY,
     aiarkApiKey: process.env.AIARK_API_KEY,
     leadmagicApiKey: process.env.LEADMAGIC_API_KEY,
