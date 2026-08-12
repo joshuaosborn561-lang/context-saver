@@ -31,6 +31,7 @@ export const JOB_KINDS = [
   "verify_emails",
   "resolve_companies",
   "sync_smartlead",
+  "import_smartlead",
   "build_suppression",
   "backfill",
 ] as const;

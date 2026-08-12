@@ -14,6 +14,7 @@ import { runEnrichContacts } from "./kinds/enrich_contacts.js";
 import { runVerifyEmails } from "./kinds/verify_emails.js";
 import { runResolveCompanies } from "./kinds/resolve_companies.js";
 import { runSyncSmartlead } from "./kinds/sync_smartlead.js";
+import { runImportSmartlead } from "./kinds/import_smartlead.js";
 import { runBuildSuppression } from "./kinds/build_suppression.js";
 import { runBackfill } from "./kinds/backfill.js";
 
@@ -42,6 +43,7 @@ const HANDLERS: Record<JobKind, JobHandler> = {
   verify_emails: runVerifyEmails,
   resolve_companies: runResolveCompanies,
   sync_smartlead: runSyncSmartlead,
+  import_smartlead: runImportSmartlead,
   build_suppression: runBuildSuppression,
   backfill: runBackfill,
 };
@@ -129,22 +131,26 @@ export async function executeJob(ctx: JobContext): Promise<void> {
       ? summary.useful_output_count
       : useful;
 
-  // Honest completion: useful output matters more than rows touched
-  const finalStatus =
-    usefulOutput === 0 && (ctx.job.rows_total ?? seed.rows_total) > 0
-      ? "completed"
-      : "completed";
+  const verifyFailed = summary.ok === false;
+  const finalStatus = verifyFailed ? "failed" : "completed";
 
   await updateJob(ctx.db, ctx.job.id, {
     status: finalStatus,
     cost_actual_usd: costActual,
+    error: verifyFailed
+      ? String(
+          Array.isArray(summary.verification_failures)
+            ? (summary.verification_failures as string[]).join("; ")
+            : "Post-run verification failed",
+        ).slice(0, 2000)
+      : null,
     results_summary: {
       ...summary,
       useful_output_count: usefulOutput,
       note:
         usefulOutput === 0
           ? "Completed with zero useful output — not a success by LeadPipe standards."
-          : undefined,
+          : summary.note,
     },
     finished_at: new Date().toISOString(),
     heartbeat_at: new Date().toISOString(),

@@ -37,8 +37,39 @@ Claude (chat) ──job requests──▶ LeadPipe worker (Railway)
 3. `verify_emails` — MillionVerifier → No2Bounce on ambiguous
 4. `resolve_companies` — SERP-first (Maps-only disabled)
 5. `sync_smartlead` — campaign stats with HTML bodies stripped server-side
-6. `build_suppression` — mark contacts `suppressed=true`
-7. `backfill` — `gc.contacts` / `gc.companies` / `peterson_leads` → `lp.*`
+6. `import_smartlead` — requeue/import from storage; assert live membership (not just upload_count)
+7. `build_suppression` — mark contacts `suppressed=true`
+8. `backfill` — `gc.contacts` / `gc.companies` / `peterson_leads` → `lp.*`
+
+### Requeue without burning context
+
+The failure mode: every lead passes through chat twice (read file + tool call), so a 1,113-lead restore truncates mid-campaign and count checks only compare against what was *sent*, not what *should* have been sent.
+
+```json
+// 1. Upload the four _clean.json files to storage (lp-exports/imports/...)
+// 2. lp_run — leads never enter the conversation
+{
+  "job_kind": "import_smartlead",
+  "client_tag": "culture_fits",
+  "params": {
+    "ignore_global_block_list": true,
+    "batch_size": 100,
+    "campaigns": [
+      { "campaign_id": "3781908", "storage_path": "imports/3781908_clean.json",
+        "expected_upload": 195, "expected_final_count": 4616 },
+      { "campaign_id": "3781909", "storage_path": "imports/3781909_clean.json",
+        "expected_upload": 302, "expected_final_count": 1250 },
+      { "campaign_id": "3781911", "storage_path": "imports/3781911_clean.json",
+        "expected_upload": 251, "expected_final_count": 1293 },
+      { "campaign_id": "3781913", "storage_path": "imports/3781913_clean.json",
+        "expected_upload": 365, "expected_final_count": 1144 }
+    ]
+  }
+}
+// 3. lp_status → per-campaign live_count vs expected_final_count, block_total, verified_ok
+```
+
+Resumable per batch. Refuses to start if clean-file length ≠ `expected_upload`.
 
 ## Example
 

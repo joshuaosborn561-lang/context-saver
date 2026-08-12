@@ -142,6 +142,27 @@ export function createServices(db: Db, config: Config): Services {
           notes: ["SERP-first resolution; Maps-only is disabled."],
         };
         notes.push(...estimate.notes);
+      } else if (
+        goal.includes("requeue") ||
+        goal.includes("import") ||
+        goal.includes("restore")
+      ) {
+        recommended = "import_smartlead";
+        const campaigns =
+          (input.filters as { campaigns?: unknown[] } | undefined)?.campaigns ??
+          [];
+        candidate_count = Array.isArray(campaigns) ? campaigns.length : 0;
+        estimate = {
+          estimated_cost_usd: 0,
+          breakdown: {},
+          notes: [
+            "Upload _clean.json files to storage first.",
+            "Pass campaigns[{ campaign_id, storage_path, expected_upload, expected_final_count }].",
+            "Asserts upload_count===sent, block_count===0, then live membership===expected_final_count.",
+            "Leads never enter chat context.",
+          ],
+        };
+        notes.push(...estimate.notes);
       } else if (goal.includes("suppress") || goal.includes("smartlead")) {
         recommended = goal.includes("suppress") ? "build_suppression" : "sync_smartlead";
         candidate_count = 0;
@@ -539,6 +560,7 @@ async function estimateForKind(
       return { estimated_cost_usd: +(count * unit).toFixed(4) };
     }
     case "sync_smartlead":
+    case "import_smartlead":
     case "build_suppression":
     case "backfill":
       return { estimated_cost_usd: 0 };
