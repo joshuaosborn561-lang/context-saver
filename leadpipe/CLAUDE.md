@@ -1,0 +1,32 @@
+# LeadPipe — use this instead of moving lead data through chat
+
+When working on leads, campaigns, enrichment, Smartlead imports, or anything that touches contact/company rows:
+
+**Prefer LeadPipe MCP tools.** Do not pull full lists into context. Do not page vendor APIs in chat. Do not paste CSVs or `_clean.json` contents into messages.
+
+## Tools (counts / IDs only)
+
+| Need | Tool |
+|------|------|
+| How many / what will it cost? | `lp_plan` |
+| Start work | `lp_run` → get `job_id` |
+| Progress | `lp_status` |
+| Client snapshot | `lp_inventory` |
+| Eyeball quality | `lp_sample` (≤10 rows) |
+| Download for humans | `lp_export` → signed URL |
+
+## Rules
+
+1. Never call vendor tools that return lead rows into this conversation when a LeadPipe job exists.
+2. Pass `client_tag` every time (`peterson`, `basco`, `culture_fits`, `parlay`, `msrs`, `bcp`).
+3. For paid work, call `lp_plan` first, then `lp_run` with `approve_cost_usd`.
+4. For Smartlead requeue: upload `_clean.json` to storage, then `import_smartlead` with `expected_upload` + `expected_final_count`. Do not import lead-by-lead in chat.
+5. Success = `useful_output_count` / verified live membership — not rows processed.
+6. If LeadPipe MCP is unavailable, say so and stop — do not fall back to dumping data into context.
+
+## Example prompts Claude should turn into tools
+
+- "Inventory Peterson" → `lp_inventory`
+- "Enrich Peterson DMs missing email, stop at LeadMagic, cap $20" → `lp_plan` then `lp_run(enrich_contacts, …)`
+- "Requeue the four remaining Culture Fits campaigns from storage" → `lp_run(import_smartlead, …)`
+- "How's job &lt;id&gt;?" → `lp_status`
