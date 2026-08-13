@@ -16,6 +16,21 @@ import {
   chunkLeads,
   verifyCampaignTotals,
 } from "../src/lib/smartlead_import.js";
+import { validateIngestSerpParams } from "../src/lib/ingest_serp_params.js";
+import {
+  companyMatches,
+  extractSerpPeople,
+  titleMatches,
+} from "../src/lib/serp_match.js";
+
+const SERVICE_TITLES = [
+  "Service Director",
+  "Fixed Operations Director",
+  "Service Manager",
+  "Assistant Service Manager",
+  "Warranty Administrator",
+  "Parts and Service Director",
+];
 
 const baseConfig = {
   costs: { ...DEFAULT_COSTS_USD },
@@ -162,6 +177,109 @@ describe("hashParams idempotency", () => {
       hashParams({ a: 1, b: { z: 2, y: 3 } }),
       hashParams({ b: { y: 3, z: 2 }, a: 1 }),
     );
+  });
+});
+
+describe("ingest_serp params", () => {
+  it("rejects unknown keys", () => {
+    const v = validateIngestSerpParams({
+      apify_run_ids: ["abc"],
+      target_titles: "Service Manager",
+      persona: "service_side",
+      foo: 1,
+    });
+    assert.equal(v.ok, false);
+    if (!v.ok) assert.match(v.error, /Unknown ingest_serp params: foo/);
+  });
+
+  it("requires run ids, titles, persona", () => {
+    assert.equal(validateIngestSerpParams({}).ok, false);
+    assert.equal(
+      validateIngestSerpParams({ apify_run_ids: ["x"], persona: "p" }).ok,
+      false,
+    );
+  });
+
+  it("accepts comma-separated run ids", () => {
+    const v = validateIngestSerpParams({
+      run_ids: "a,b,c",
+      target_titles: SERVICE_TITLES.join(","),
+      persona: "service_side",
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.params.apify_run_ids, ["a", "b", "c"]);
+  });
+});
+
+describe("serp company/title filters", () => {
+  it("rejects OEM-only company overlap", () => {
+    assert.equal(
+      companyMatches("Nissan of Norwich", "Middletown Nissan"),
+      false,
+    );
+    assert.equal(
+      companyMatches("Devan Acura Of Norwalk", "Devan Acura of Norwalk"),
+      true,
+    );
+  });
+
+  it("matches contiguous service titles only", () => {
+    assert.equal(titleMatches("Service Manager", SERVICE_TITLES), true);
+    assert.equal(
+      titleMatches("Director of Fixed Operations", SERVICE_TITLES),
+      true,
+    );
+    assert.equal(
+      titleMatches("Commercial Service Account Manager", SERVICE_TITLES),
+      false,
+    );
+    assert.equal(
+      titleMatches("Customer Service Manager", SERVICE_TITLES),
+      false,
+    );
+  });
+
+  it("extracts matched SERP people and drops noise", () => {
+    const people = extractSerpPeople(
+      [
+        {
+          searchQuery: {
+            term:
+              'site:linkedin.com/in "Devan Acura Of Norwalk" ("Service Manager")',
+          },
+          organicResults: [
+            {
+              title: "Douglas Dente - Service Manager - Devan Acura Of Norwalk",
+              url: "https://www.linkedin.com/in/douglas-dente",
+              personalInfo: {
+                jobTitle: "Service Manager",
+                companyName: "Devan Acura Of Norwalk",
+              },
+            },
+            {
+              title: "Robert Clement - Service Manager - Nissan of Norwich",
+              url: "https://www.linkedin.com/in/robert-clement",
+              personalInfo: {
+                jobTitle: "Service Manager",
+                companyName: "Nissan of Norwich",
+              },
+            },
+            {
+              title: "Pat Tech - Automotive Technician - Devan Acura Of Norwalk",
+              url: "https://www.linkedin.com/in/pat-tech",
+              description: "Technician",
+              personalInfo: {
+                jobTitle: "Automotive Technician",
+                companyName: "Devan Acura Of Norwalk",
+              },
+            },
+          ],
+        },
+      ],
+      { targetTitles: SERVICE_TITLES, requireCompanyMatch: true },
+    );
+    assert.equal(people.length, 1);
+    assert.equal(people[0]!.first_name, "Douglas");
   });
 });
 

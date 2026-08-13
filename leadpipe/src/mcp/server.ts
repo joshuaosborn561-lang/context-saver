@@ -196,6 +196,9 @@ function toolDefinitions() {
         "backfill params (unknown keys rejected): source ('gc'|'basco'|'peterson'|'permit_parcel.operators'|…) " +
         "OR source_schema+source_table(s); optional icp_only, owner_segments, where. " +
         "Basco: {source:'basco'} → client_basco.leads. " +
+        "ingest_serp (FREE — do not pull Apify into chat): " +
+        "params={apify_run_ids:['…'], target_titles:'Service Director,…', persona:'service_side'}. " +
+        "Company+title filter server-side → lp.contacts + client_<tag>.contacts. " +
         "Zero source rows → failed (never silent success).",
       inputSchema: {
         type: "object",
@@ -348,8 +351,15 @@ function classifyErrorMessage(message: string): string {
   const m = message.toLowerCase();
   if (m.includes("unauthorized") || m.includes("jwt")) return "auth_error";
   if (m.includes("timeout") || m.includes("timed out")) return "timeout";
-  if (m.includes("unknown backfill") || m.includes("unknown job_kind")) {
+  if (
+    m.includes("unknown backfill") ||
+    m.includes("unknown ingest_serp") ||
+    m.includes("unknown job_kind")
+  ) {
     return "invalid_params";
+  }
+  if (m.includes("apify_token") || m.includes("apify token")) {
+    return "config_error";
   }
   if (m.includes("zero companies") || m.includes("zero source") || m.includes("rows_total=0")) {
     return "empty_input";

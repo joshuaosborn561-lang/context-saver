@@ -14,6 +14,7 @@ import {
 } from "./lib/cost.js";
 import { applyCompanyFilter, applyContactFilter, type LeadFilter } from "./lib/filters.js";
 import { validateBackfillParams } from "./lib/backfill_params.js";
+import { validateIngestSerpParams } from "./lib/ingest_serp_params.js";
 
 const SAMPLE_MAX = 10;
 
@@ -102,7 +103,26 @@ export function createServices(db: Db, config: Config): Services {
         notes: [] as string[],
       };
 
-      if (goal.includes("dm") || goal.includes("decision") || goal.includes("title")) {
+      if (
+        goal.includes("ingest_serp") ||
+        goal.includes("apify") ||
+        goal.includes("serp ingest") ||
+        (goal.includes("serp") && !goal.includes("resolv"))
+      ) {
+        recommended = "ingest_serp";
+        candidate_count = 0;
+        estimate = {
+          estimated_cost_usd: 0,
+          breakdown: {},
+          notes: [
+            "Free job — reads finished Apify google-search-scraper datasets.",
+            "lp_run params: apify_run_ids, target_titles, persona.",
+            "Filters company match + titles server-side; writes lp.contacts + client_<tag>.contacts.",
+            "Do NOT pull Apify datasets into chat — use this job.",
+          ],
+        };
+        notes.push(...estimate.notes);
+      } else if (goal.includes("dm") || goal.includes("decision") || goal.includes("title")) {
         recommended = "find_dms_by_title";
         candidate_count = await countCompaniesMissingDm(db, input.client_tag);
         const e = estimateFindDmsCost(config, candidate_count);
@@ -110,6 +130,9 @@ export function createServices(db: Db, config: Config): Services {
         notes.push(...e.notes);
         notes.push(
           "candidate_count = companies lacking a DM-grade contact with email.",
+        );
+        notes.push(
+          "Paid LeadMagic path. For already-scraped LinkedIn SERP runs use ingest_serp instead.",
         );
       } else if (goal.includes("enrich") || goal.includes("email")) {
         recommended = "enrich_contacts";
@@ -519,6 +542,16 @@ function sanitizeParams(
     const v = validateBackfillParams(out);
     if (!v.ok) throw new Error(v.error);
   }
+  if (kind === "ingest_serp") {
+    const v = validateIngestSerpParams(out);
+    if (!v.ok) throw new Error(v.error);
+    // Normalize so idempotent hash is stable
+    out.apify_run_ids = v.params.apify_run_ids;
+    out.target_titles = v.params.target_titles;
+    out.persona = v.params.persona;
+    out.require_company_match = v.params.require_company_match !== false;
+    delete out.run_ids;
+  }
   return out;
 }
 
@@ -574,6 +607,7 @@ async function estimateForKind(
     case "import_smartlead":
     case "build_suppression":
     case "backfill":
+    case "ingest_serp":
       return { estimated_cost_usd: 0 };
     default:
       return { estimated_cost_usd: 0 };

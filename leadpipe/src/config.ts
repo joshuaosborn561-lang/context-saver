@@ -34,6 +34,7 @@ export const JOB_KINDS = [
   "import_smartlead",
   "build_suppression",
   "backfill",
+  "ingest_serp",
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
@@ -73,6 +74,8 @@ export interface Config {
   millionverifierApiKey?: string;
   no2bounceApiKey?: string;
   smartleadApiKey?: string;
+  /** Apify token — ingest_serp reads finished google-search-scraper datasets */
+  apifyToken?: string;
   /** Maps / permit_parcel project (kemvxzhcxvynmoutwdrh) */
   mapsSupabaseUrl?: string;
   mapsSupabaseServiceKey?: string;
@@ -150,6 +153,10 @@ export function loadConfig(): Config {
     millionverifierApiKey: process.env.MILLIONVERIFIER_API_KEY,
     no2bounceApiKey: process.env.NO2BOUNCE_API_KEY,
     smartleadApiKey: process.env.SMARTLEAD_API_KEY,
+    apifyToken:
+      process.env.APIFY_TOKEN ||
+      process.env.LEADPIPE_APIFY_TOKEN ||
+      undefined,
     mapsSupabaseUrl:
       process.env.MAPS_SUPABASE_URL ?? process.env.LEADS_SUPABASE_URL,
     mapsSupabaseServiceKey:

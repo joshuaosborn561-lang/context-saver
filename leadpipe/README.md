@@ -32,12 +32,14 @@ Claude (chat) ──job requests──▶ LeadPipe worker (Railway)
 
 ## Job kinds
 
-1. `find_dms_by_title` — employee_finder → title filter → email on survivors only
+1. `find_dms_by_title` — employee_finder → title filter → email on survivors only (**paid**)
 2. `enrich_contacts` — getleads → AI Ark → LeadMagic → FullEnrich (`max_tier`)
 3. `verify_emails` — MillionVerifier → No2Bounce on ambiguous
 4. `resolve_companies` — SERP-first (Maps-only disabled)
 5. `sync_smartlead` — campaign stats with HTML bodies stripped server-side
 6. `import_smartlead` — requeue/import from storage; assert live membership (not just upload_count)
+7. `backfill` — copy source tables into `lp.*` for a `client_tag`
+8. `ingest_serp` — **free** ingest of finished Apify `google-search-scraper` runs (`apify_run_ids` + `target_titles` + `persona`); company/title filter server-side; no chat payload
 7. `build_suppression` — mark contacts `suppressed=true`
 8. `backfill` — `gc.contacts` / `gc.companies` / `peterson_leads` → `lp.*`
 
