@@ -87,6 +87,24 @@ describe("backfill param validation", () => {
     assert.equal(v.ok, true);
     if (v.ok) assert.deepEqual(v.tasks, ["permit_parcel.operators"]);
   });
+  it("accepts basco → client_basco.leads", () => {
+    const v = validateBackfillParams({ source: "basco", icp_only: true });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["client_leads:client_basco"]);
+  });
+  it("accepts client_basco schema + leads table", () => {
+    const v = validateBackfillParams({
+      source_schema: "client_basco",
+      source_table: "leads",
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["client_leads:client_basco"]);
+  });
+  it("remaps legacy public.peterson_leads to client_peterson", () => {
+    const v = validateBackfillParams({ source: "peterson_leads" });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["client_leads:client_peterson"]);
+  });
   it("rejects empty params", () => {
     const v = validateBackfillParams({});
     assert.equal(v.ok, false);

@@ -30,10 +30,11 @@ Two Supabase projects — do not mix them:
 
 | Source | Project | Params |
 |--------|---------|--------|
-| `gc.companies` + `gc.contacts` | `azpapwtnrbzywlnxxecz` | `{ "source": "gc" }` or `{ "source_schema": "gc", "source_tables": ["companies","contacts"] }` |
+| `gc.companies` + `gc.contacts` | `azpapwtnrbzywlnxxecz` | `{ "source": "gc" }` |
+| `client_<tag>.leads` (Basco / Peterson maps) | `azpapwtnrbzywlnxxecz` | `{ "source": "basco" }` or `{ "source_schema": "client_basco", "source_table": "leads", "icp_only": true }` |
 | `permit_parcel.operators` (domains only) | `kemvxzhcxvynmoutwdrh` | `{ "source": "permit_parcel.operators", "owner_segments": ["private","religious_nonprofit"] }` |
 
-Unknown param keys are rejected. Zero source rows → job **failed** (never `running` with `rows_total: 0`).
+`public.basco_leads` / `public.peterson_leads` were dropped — use `client_basco.leads` / `client_peterson.leads`. Unknown param keys rejected. Zero source rows → job **failed**.
 
 ## Example prompts Claude should turn into tools
 

@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { JobHandler, JobContext } from "../runner.js";
 import { seedEntityKeys, storeRawPayload } from "../runner.js";
 import {
+  parseClientLeadsTask,
   parseOwnerSegments,
   validateBackfillParams,
   type BackfillParams,
@@ -42,6 +43,7 @@ export const runBackfill: JobHandler = {
     let inserted = 0;
     let source_rows = 0;
 
+    const clientLeads = parseClientLeadsTask(entityKey);
     if (entityKey === "gc_companies") {
       const r = await backfillGcCompanies(ctx);
       inserted = r.inserted;
@@ -50,8 +52,15 @@ export const runBackfill: JobHandler = {
       const r = await backfillGcContacts(ctx);
       inserted = r.inserted;
       source_rows = r.source_rows;
-    } else if (entityKey === "peterson_leads") {
-      const r = await backfillPetersonLeads(ctx);
+    } else if (entityKey === "peterson_leads" || clientLeads) {
+      // peterson_leads alias + client_<tag>.leads (canonical)
+      const schema =
+        clientLeads?.schema ??
+        (entityKey === "peterson_leads" ? "client_peterson" : "");
+      if (!schema) {
+        throw new Error(`Could not resolve schema for task ${entityKey}`);
+      }
+      const r = await backfillClientLeads(ctx, schema, params);
       inserted = r.inserted;
       source_rows = r.source_rows;
     } else if (entityKey === "permit_parcel.operators") {
@@ -60,7 +69,8 @@ export const runBackfill: JobHandler = {
       source_rows = r.source_rows;
     } else {
       throw new Error(
-        `Unknown backfill task "${entityKey}". Supported: gc_companies, gc_contacts, peterson_leads, permit_parcel.operators`,
+        `Unknown backfill task "${entityKey}". Supported: gc_companies, gc_contacts, ` +
+          `client_leads:client_<tag>, permit_parcel.operators`,
       );
     }
 
@@ -263,56 +273,128 @@ async function backfillGcContacts(ctx: Ctx): Promise<CountResult> {
   return { inserted, source_rows };
 }
 
-async function backfillPetersonLeads(ctx: Ctx): Promise<CountResult> {
-  const publicDb = createClient(ctx.config.supabaseUrl, ctx.config.supabaseServiceKey, {
-    auth: { persistSession: false },
-  });
+/**
+ * Backfill from client_<tag>.leads (canonical).
+ * public.peterson_leads / public.basco_leads were dropped — do not recreate them.
+ */
+async function backfillClientLeads(
+  ctx: Ctx,
+  schema: string,
+  params: BackfillParams,
+): Promise<CountResult> {
+  const clientDb = createClient(
+    ctx.config.supabaseUrl,
+    ctx.config.supabaseServiceKey,
+    {
+      auth: { persistSession: false },
+      db: { schema },
+    },
+  ) as SupabaseClient<any, any, any>;
 
   let inserted = 0;
   let source_rows = 0;
   let from = 0;
   const page = 500;
+  const byDomain = new Map<string, Record<string, unknown>>();
+  const contactsWithEmail: Record<string, unknown>[] = [];
 
   for (;;) {
-    const { data, error } = await publicDb
-      .from("peterson_leads")
+    let q = clientDb
+      .from("leads")
       .select("*")
+      .not("domain", "is", null)
+      .neq("domain", "")
       .range(from, from + page - 1);
-    if (error) throw new Error(`peterson_leads: ${error.message}`);
+
+    if (params.icp_only === true) {
+      q = q.eq("in_icp", true);
+    }
+    if (params.run_label) {
+      q = q.eq("run_label", params.run_label);
+    }
+
+    const { data, error } = await q;
+    if (error) {
+      throw new Error(
+        `${schema}.leads: ${error.message}. ` +
+          `Is schema "${schema}" exposed to PostgREST (Accept-Profile)?`,
+      );
+    }
     if (!data?.length) break;
     source_rows += data.length;
 
-    const companyRows = data
-      .map((r) => {
-        const domain =
-          (r.domain as string) ||
-          (typeof r.website === "string"
-            ? r.website.replace(/^https?:\/\//, "").split("/")[0]
-            : null);
-        if (!domain) return null;
-        return {
-          client_tag: ctx.job.client_tag,
-          domain: domain.toLowerCase().trim(),
-          company_name: (r.company_name ?? r.name ?? r.business_name) as string | null,
-          source: "peterson_leads",
-          city: (r.city as string) ?? null,
-          state: (r.state as string) ?? null,
-          website: (r.website as string) ?? null,
-          metadata: { from_peterson_leads: true },
-        };
-      })
-      .filter((r): r is NonNullable<typeof r> => !!r);
+    for (const r of data) {
+      const domain = String(r.domain ?? "")
+        .toLowerCase()
+        .trim();
+      if (!domain) continue;
+      byDomain.set(domain, {
+        client_tag: ctx.job.client_tag,
+        domain,
+        company_name: (r.name ?? r.company_name ?? null) as string | null,
+        source: `${schema}.leads`,
+        city: (r.city as string) ?? null,
+        state: (r.state as string) ?? null,
+        website: (r.website as string) ?? null,
+        phone: (r.phone as string) ?? null,
+        address: (r.address as string) ?? null,
+        in_icp: Boolean(r.in_icp),
+        metadata: {
+          from_client_leads: true,
+          schema,
+          place_id: r.place_id,
+          run_label: r.run_label,
+          main_category: r.main_category,
+          icp_reason: r.icp_reason,
+        },
+      });
 
-    if (companyRows.length) {
-      const { error: upErr } = await ctx.db
-        .from("companies")
-        .upsert(companyRows, { onConflict: "client_tag,domain" });
-      if (upErr) throw new Error(upErr.message);
-      inserted += companyRows.length;
+      const email = r.email ? String(r.email).toLowerCase().trim() : "";
+      if (email) {
+        const name = String(r.owner_name ?? "").trim();
+        const parts = name.split(/\s+/).filter(Boolean);
+        contactsWithEmail.push({
+          client_tag: ctx.job.client_tag,
+          domain,
+          first_name: parts[0] ?? null,
+          last_name: parts.length > 1 ? parts.slice(1).join(" ") : null,
+          job_title: (r.owner_title as string) ?? null,
+          email,
+          phone: (r.phone as string) ?? null,
+          source_tool: `${schema}.leads`,
+          source_tier: "maps_owner",
+          metadata: { place_id: r.place_id, from_client_leads: true },
+        });
+      }
     }
 
     if (data.length < page) break;
     from += page;
+  }
+
+  const companyRows = [...byDomain.values()];
+  for (let i = 0; i < companyRows.length; i += 200) {
+    const chunk = companyRows.slice(i, i + 200);
+    const { error: upErr } = await ctx.db
+      .from("companies")
+      .upsert(chunk, { onConflict: "client_tag,domain" });
+    if (upErr) throw new Error(`lp.companies upsert: ${upErr.message}`);
+    inserted += chunk.length;
+  }
+
+  // Dedupe contacts by domain+email before upsert
+  const contactByKey = new Map<string, Record<string, unknown>>();
+  for (const c of contactsWithEmail) {
+    contactByKey.set(`${c.domain}|${c.email}`, c);
+  }
+  const contactRows = [...contactByKey.values()];
+  for (let i = 0; i < contactRows.length; i += 200) {
+    const chunk = contactRows.slice(i, i + 200);
+    const { error: upErr } = await ctx.db
+      .from("contacts")
+      .upsert(chunk, { onConflict: "client_tag,domain,email" });
+    if (upErr) throw new Error(`lp.contacts upsert: ${upErr.message}`);
+    inserted += chunk.length;
   }
 
   return { inserted, source_rows };

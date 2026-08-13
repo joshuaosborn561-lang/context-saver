@@ -189,10 +189,9 @@ function toolDefinitions() {
       name: "lp_run",
       description:
         "Queue a job. Returns job_id + status + estimate. Identical params attach to existing run (idempotent). Cost-gated. " +
-        "backfill params (unknown keys rejected): source ('gc'|'gc_companies'|'gc_contacts'|'permit_parcel.operators'|'peterson_leads') " +
-        "OR source_schema+source_table(s); optional source_project, domain_column, name_column, owner_segments, where. " +
-        "Examples: {source:'gc'} or {source_schema:'gc',source_tables:['companies','contacts']} " +
-        "or {source:'permit_parcel.operators',owner_segments:['private','religious_nonprofit']}. " +
+        "backfill params (unknown keys rejected): source ('gc'|'basco'|'peterson'|'permit_parcel.operators'|…) " +
+        "OR source_schema+source_table(s); optional icp_only, owner_segments, where. " +
+        "Basco: {source:'basco'} → client_basco.leads. " +
         "Zero source rows → failed (never silent success).",
       inputSchema: {
         type: "object",

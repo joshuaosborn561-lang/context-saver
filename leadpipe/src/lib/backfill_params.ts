@@ -14,7 +14,11 @@ const ALLOWED_KEYS = new Set([
   "name_column",
   "owner_segments",
   "where",
+  "icp_only",
+  "run_label",
 ]);
+
+const CLIENT_SCHEMA_RE = /^client_[a-z][a-z0-9_]{0,46}$/;
 
 export type BackfillParams = {
   source?: string;
@@ -27,6 +31,8 @@ export type BackfillParams = {
   name_column?: string;
   owner_segments?: string[];
   where?: string;
+  icp_only?: boolean;
+  run_label?: string;
 };
 
 export function validateBackfillParams(params: Record<string, unknown>): {
@@ -41,8 +47,9 @@ export function validateBackfillParams(params: Record<string, unknown>): {
       error:
         `Unknown backfill params: ${unknown.join(", ")}. ` +
         `Expected keys: ${[...ALLOWED_KEYS].sort().join(", ")}. ` +
-        `Examples: { source: "gc" } or { source_schema: "gc", source_tables: ["companies","contacts"] } ` +
-        `or { source: "permit_parcel.operators", owner_segments: ["private","religious_nonprofit"] }.`,
+        `Examples: { source: "gc" } | { source: "basco" } | ` +
+        `{ source_schema: "client_basco", source_table: "leads" } | ` +
+        `{ source: "permit_parcel.operators", owner_segments: ["private"] }.`,
     };
   }
 
@@ -54,8 +61,8 @@ export function validateBackfillParams(params: Record<string, unknown>): {
         ok: false,
         error:
           `backfill could not resolve any source tasks from params ${JSON.stringify(params)}. ` +
-          `Pass source: "gc" | "gc_companies" | "gc_contacts" | "permit_parcel.operators" | "peterson_leads", ` +
-          `or source_schema + source_table(s).`,
+          `Pass source: "gc" | "basco" | "peterson" | "client_basco.leads" | ` +
+          `"permit_parcel.operators" | "peterson_leads", or source_schema + source_table(s).`,
       };
     }
     return { ok: true, normalized: p, tasks };
@@ -67,11 +74,25 @@ export function validateBackfillParams(params: Record<string, unknown>): {
   }
 }
 
+/** Task id for client_<tag>.leads → `client_leads:client_basco` */
+export function clientLeadsTask(schema: string): string {
+  return `client_leads:${schema}`;
+}
+
+export function parseClientLeadsTask(
+  task: string,
+): { schema: string } | null {
+  if (!task.startsWith("client_leads:")) return null;
+  const schema = task.slice("client_leads:".length);
+  if (!CLIENT_SCHEMA_RE.test(schema)) return null;
+  return { schema };
+}
+
 export function resolveTasks(p: BackfillParams): string[] {
   if (p.source) {
     const s = p.source.trim().toLowerCase();
     if (s === "gc") return ["gc_companies", "gc_contacts"];
-    if (s === "gc_companies" || s === "gc_contacts" || s === "peterson_leads") {
+    if (s === "gc_companies" || s === "gc_contacts") {
       return [s];
     }
     if (
@@ -80,6 +101,24 @@ export function resolveTasks(p: BackfillParams): string[] {
       s === "permit_parcel_operators"
     ) {
       return ["permit_parcel.operators"];
+    }
+    // Client aliases → client_<tag>.leads (canonical estate; public.*_leads dropped)
+    if (s === "basco" || s === "basco_leads" || s === "client_basco.leads") {
+      return [clientLeadsTask("client_basco")];
+    }
+    if (
+      s === "peterson" ||
+      s === "peterson_leads" ||
+      s === "client_peterson.leads"
+    ) {
+      return [clientLeadsTask("client_peterson")];
+    }
+    if (s.startsWith("client_") && s.endsWith(".leads")) {
+      const schema = s.slice(0, -".leads".length);
+      if (!CLIENT_SCHEMA_RE.test(schema)) {
+        throw new Error(`Invalid client schema in source: ${s}`);
+      }
+      return [clientLeadsTask(schema)];
     }
   }
 
@@ -110,8 +149,27 @@ export function resolveTasks(p: BackfillParams): string[] {
     );
   }
 
-  if (schema === "public" && tables.includes("peterson_leads")) {
-    return ["peterson_leads"];
+  if (CLIENT_SCHEMA_RE.test(schema)) {
+    if (tables.length === 0 || tables.includes("leads")) {
+      return [clientLeadsTask(schema)];
+    }
+    throw new Error(
+      `Unsupported ${schema} table(s): ${tables.join(", ")}. Expected leads.`,
+    );
+  }
+
+  // Legacy public.*_leads — remap to client_* (tables were dropped)
+  if (schema === "public") {
+    if (tables.includes("peterson_leads") || tables.includes("basco_leads")) {
+      const out: string[] = [];
+      if (tables.includes("peterson_leads")) {
+        out.push(clientLeadsTask("client_peterson"));
+      }
+      if (tables.includes("basco_leads")) {
+        out.push(clientLeadsTask("client_basco"));
+      }
+      return out;
+    }
   }
 
   return [];
