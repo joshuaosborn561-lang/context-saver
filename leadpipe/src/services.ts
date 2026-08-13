@@ -492,25 +492,12 @@ async function countCompaniesMissingDm(
   db: Db,
   clientTag: string,
 ): Promise<number> {
-  const { data: companies, error } = await db
-    .from("companies")
-    .select("domain")
-    .eq("client_tag", clientTag)
-    .not("domain", "is", null);
-  if (error) throw new Error(error.message);
-  const { data: haveDm, error: e2 } = await db
-    .from("contacts")
-    .select("domain")
-    .eq("client_tag", clientTag)
-    .eq("is_dm", true)
-    .not("email", "is", null);
-  if (e2) throw new Error(e2.message);
-  const have = new Set(
-    (haveDm ?? []).map((r) => String(r.domain ?? "").toLowerCase()),
+  const { fetchAllDomains, fetchDomainsWithDmEmail } = await import(
+    "./lib/paginate.js"
   );
-  return (companies ?? []).filter(
-    (c) => c.domain && !have.has(String(c.domain).toLowerCase()),
-  ).length;
+  const companies = await fetchAllDomains(db, clientTag);
+  const have = await fetchDomainsWithDmEmail(db, clientTag);
+  return companies.filter((d) => !have.has(d.toLowerCase())).length;
 }
 
 function sanitizeParams(

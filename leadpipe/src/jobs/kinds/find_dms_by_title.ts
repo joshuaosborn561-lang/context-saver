@@ -5,6 +5,10 @@ import {
   isDecisionMakerTitle,
   isUsPerson,
 } from "../../lib/dm.js";
+import {
+  fetchAllDomains,
+  fetchDomainsWithDmEmail,
+} from "../../lib/paginate.js";
 
 /**
  * find_dms_by_title — biggest immediate win.
@@ -22,25 +26,12 @@ export const runFindDmsByTitle: JobHandler = {
 
     let domains = params.domains ?? [];
     if (domains.length === 0) {
-      const { data, error } = await ctx.db
-        .from("companies")
-        .select("domain")
-        .eq("client_tag", ctx.job.client_tag)
-        .not("domain", "is", null);
-      if (error) throw new Error(error.message);
-      domains = (data ?? []).map((r) => r.domain as string).filter(Boolean);
+      // Paginate — PostgREST caps a single select at 1000 rows.
+      domains = await fetchAllDomains(ctx.db, ctx.job.client_tag);
 
       // Default: skip companies that already have a DM-grade contact with email
       if (params.only_missing_dm !== false) {
-        const { data: haveDm } = await ctx.db
-          .from("contacts")
-          .select("domain")
-          .eq("client_tag", ctx.job.client_tag)
-          .eq("is_dm", true)
-          .not("email", "is", null);
-        const have = new Set(
-          (haveDm ?? []).map((r) => String(r.domain ?? "").toLowerCase()),
-        );
+        const have = await fetchDomainsWithDmEmail(ctx.db, ctx.job.client_tag);
         domains = domains.filter((d) => !have.has(d.toLowerCase()));
       }
     }
