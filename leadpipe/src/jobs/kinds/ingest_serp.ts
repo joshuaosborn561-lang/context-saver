@@ -395,7 +395,6 @@ async function writePerson(
     source_tier: "apify_serp",
     confidence: person.confidence,
     persona: params.persona,
-    is_dm: true,
     metadata: {
       persona: params.persona,
       queried_company: person.queried_company,
