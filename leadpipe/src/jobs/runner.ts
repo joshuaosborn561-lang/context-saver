@@ -1,4 +1,4 @@
-import type { Config, EnrichTier, JobKind } from "../config.js";
+import type { Config, JobKind } from "../config.js";
 import type { Db, JobRow } from "../db/client.js";
 import {
   fetchPendingJobRows,
@@ -9,10 +9,6 @@ import {
   upsertJobRows,
 } from "../db/client.js";
 import type { Vendors } from "../vendors/index.js";
-import { runFindDmsByTitle } from "./kinds/find_dms_by_title.js";
-import { runEnrichContacts } from "./kinds/enrich_contacts.js";
-import { runVerifyEmails } from "./kinds/verify_emails.js";
-import { runResolveCompanies } from "./kinds/resolve_companies.js";
 import { runSyncSmartlead } from "./kinds/sync_smartlead.js";
 import { runImportSmartlead } from "./kinds/import_smartlead.js";
 import { runBuildSuppression } from "./kinds/build_suppression.js";
@@ -39,10 +35,6 @@ export interface JobHandler {
 }
 
 const HANDLERS: Record<JobKind, JobHandler> = {
-  find_dms_by_title: runFindDmsByTitle,
-  enrich_contacts: runEnrichContacts,
-  verify_emails: runVerifyEmails,
-  resolve_companies: runResolveCompanies,
   sync_smartlead: runSyncSmartlead,
   import_smartlead: runImportSmartlead,
   build_suppression: runBuildSuppression,
@@ -108,7 +100,7 @@ export async function executeJob(ctx: JobContext): Promise<void> {
     if (batch.length === 0) break;
 
     for (const row of batch) {
-      // Strict >: approve_cost_usd=0 must allow free work (backfill). >= 0 blocked instantly.
+      // Strict >: approve_cost_usd=0 must allow free work.
       if (costActual > ceiling) {
         await updateJob(ctx.db, ctx.job.id, {
           status: "cost_blocked",
@@ -161,7 +153,6 @@ export async function executeJob(ctx: JobContext): Promise<void> {
       ? summary.useful_output_count
       : useful;
 
-  // Zero useful output is ALWAYS a failure — never a quiet success.
   const verifyFailed = summary.ok === false;
   const zeroUseful = usefulOutput === 0;
   const finalStatus = verifyFailed || zeroUseful ? "failed" : "completed";
@@ -204,4 +195,3 @@ export async function seedEntityKeys(
 }
 
 export { storeRawPayload };
-export type { EnrichTier };

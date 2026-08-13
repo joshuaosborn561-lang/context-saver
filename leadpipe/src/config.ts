@@ -1,56 +1,18 @@
 /**
  * LeadPipe configuration.
- * All secrets via env; never hardcode vendor keys.
+ * Pass-through only: move data server-side so chat never carries payloads.
+ * No paid enrichment / DM lookup strategy.
  */
 
-export type EnrichTier = "getleads" | "aiark" | "leadmagic" | "fullenrich";
-
-export const ENRICH_TIER_ORDER: EnrichTier[] = [
-  "getleads",
-  "aiark",
-  "leadmagic",
-  "fullenrich",
-];
-
-/** USD cost estimates per useful call (configurable via env overrides). */
-export const DEFAULT_COSTS_USD: Record<string, number> = {
-  getleads_employee_finder: 0.005,
-  getleads_work_email_finder: 0.05,
-  aiark_enrich: 0.08,
-  leadmagic_enrich: 0.04,
-  fullenrich_enrich: 0.12,
-  millionverifier: 0.002,
-  no2bounce: 0.003,
-  smartlead_sync_page: 0.0,
-  resolve_serp: 0.01,
-};
-
 export const JOB_KINDS = [
-  "find_dms_by_title",
-  "enrich_contacts",
-  "verify_emails",
-  "resolve_companies",
+  "backfill",
+  "ingest_serp",
   "sync_smartlead",
   "import_smartlead",
   "build_suppression",
-  "backfill",
-  "ingest_serp",
 ] as const;
 
 export type JobKind = (typeof JOB_KINDS)[number];
-
-/** Vendor-spend jobs — never auto-recommend; require explicit confirm_paid_vendor. */
-export const PAID_JOB_KINDS = [
-  "find_dms_by_title",
-  "enrich_contacts",
-  "verify_emails",
-] as const;
-
-export type PaidJobKind = (typeof PAID_JOB_KINDS)[number];
-
-export function isPaidJobKind(kind: string): kind is PaidJobKind {
-  return (PAID_JOB_KINDS as readonly string[]).includes(kind);
-}
 
 export const CLIENT_TAGS = [
   "peterson",
@@ -74,21 +36,13 @@ export interface Config {
   sampleMaxRows: number;
   exportBucket: string;
   exportTtlSeconds: number;
-  costs: Record<string, number>;
   /** Bearer token required for remote /mcp (Claude URL connector) */
   mcpAuthToken?: string;
   /** Allow unauthenticated /mcp — local only */
   mcpAllowUnauthenticated: boolean;
-  /** Vendor API keys — optional until the job kind is used */
-  getleadsApiKey?: string;
-  aiarkApiKey?: string;
-  leadmagicApiKey?: string;
-  fullenrichApiKey?: string;
-  millionverifierApiKey?: string;
-  no2bounceApiKey?: string;
-  smartleadApiKey?: string;
   /** Apify token — ingest_serp reads finished google-search-scraper datasets */
   apifyToken?: string;
+  smartleadApiKey?: string;
   /** Maps / permit_parcel project (kemvxzhcxvynmoutwdrh) */
   mapsSupabaseUrl?: string;
   mapsSupabaseServiceKey?: string;
@@ -117,7 +71,6 @@ export function loadConfig(): Config {
     );
   }
 
-  // Hard block PDL — non-negotiable
   if (
     process.env.PDL_API_KEY ||
     process.env.PEOPLE_DATA_LABS_API_KEY ||
@@ -126,14 +79,6 @@ export function loadConfig(): Config {
     throw new Error(
       "People Data Labs is forbidden in LeadPipe. Remove PDL_* env vars.",
     );
-  }
-
-  const costs = { ...DEFAULT_COSTS_USD };
-  for (const key of Object.keys(DEFAULT_COSTS_USD)) {
-    const envKey = `COST_${key.toUpperCase()}`;
-    if (process.env[envKey]) {
-      costs[key] = Number(process.env[envKey]);
-    }
   }
 
   const modeArg = process.argv.find((a) => a.startsWith("--mode="))?.slice(7)
@@ -146,30 +91,22 @@ export function loadConfig(): Config {
     supabaseServiceKey,
     port: num("PORT", 8080),
     mode: (modeArg as Config["mode"]) ?? (process.env.LEADPIPE_MODE as Config["mode"]) ?? "both",
-    defaultCostCeilingUsd: num("LEADPIPE_COST_CEILING_USD", 50),
+    defaultCostCeilingUsd: num("LEADPIPE_COST_CEILING_USD", 0),
     pollIntervalMs: num("LEADPIPE_POLL_MS", 2000),
     heartbeatIntervalMs: num("LEADPIPE_HEARTBEAT_MS", 15000),
     sampleMaxRows: 10,
     exportBucket: process.env.LEADPIPE_EXPORT_BUCKET ?? "lp-exports",
     exportTtlSeconds: num("LEADPIPE_EXPORT_TTL_SECONDS", 86400),
-    costs,
     mcpAuthToken: process.env.LEADPIPE_MCP_TOKEN || process.env.MCP_AUTH_TOKEN,
-    // No token configured → open /mcp (Claude remote URL). Set LEADPIPE_MCP_TOKEN to re-enable auth.
     mcpAllowUnauthenticated:
       process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "1" ||
       process.env.LEADPIPE_MCP_ALLOW_UNAUTH === "true" ||
       !(process.env.LEADPIPE_MCP_TOKEN || process.env.MCP_AUTH_TOKEN),
-    getleadsApiKey: process.env.GETLEADS_API_KEY,
-    aiarkApiKey: process.env.AIARK_API_KEY,
-    leadmagicApiKey: process.env.LEADMAGIC_API_KEY,
-    fullenrichApiKey: process.env.FULLENRICH_API_KEY,
-    millionverifierApiKey: process.env.MILLIONVERIFIER_API_KEY,
-    no2bounceApiKey: process.env.NO2BOUNCE_API_KEY,
-    smartleadApiKey: process.env.SMARTLEAD_API_KEY,
     apifyToken:
       process.env.APIFY_TOKEN ||
       process.env.LEADPIPE_APIFY_TOKEN ||
       undefined,
+    smartleadApiKey: process.env.SMARTLEAD_API_KEY,
     mapsSupabaseUrl:
       process.env.MAPS_SUPABASE_URL ?? process.env.LEADS_SUPABASE_URL,
     mapsSupabaseServiceKey:

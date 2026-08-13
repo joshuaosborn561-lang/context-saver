@@ -1,5 +1,5 @@
-import type { Config, EnrichTier, JobKind } from "./config.js";
-import { ENRICH_TIER_ORDER, JOB_KINDS, isPaidJobKind } from "./config.js";
+import type { Config, JobKind } from "./config.js";
+import { JOB_KINDS } from "./config.js";
 import type { Db, JobRow } from "./db/client.js";
 import {
   findIdempotentJob,
@@ -7,11 +7,6 @@ import {
   hashParams,
   insertJob,
 } from "./db/client.js";
-import {
-  estimateEnrichCost,
-  estimateFindDmsCost,
-  estimateVerifyCost,
-} from "./lib/cost.js";
 import { applyCompanyFilter, applyContactFilter, type LeadFilter } from "./lib/filters.js";
 import { validateBackfillParams } from "./lib/backfill_params.js";
 import { validateIngestSerpParams } from "./lib/ingest_serp_params.js";
@@ -23,7 +18,6 @@ export interface Services {
     client_tag: string;
     goal: string;
     filters?: Partial<LeadFilter>;
-    max_tier?: EnrichTier;
   }): Promise<{
     candidate_count: number;
     estimated_cost_usd: number;
@@ -95,25 +89,13 @@ export function createServices(db: Db, config: Config): Services {
         ...input.filters,
       };
       const goal = input.goal.toLowerCase();
-      const notes: string[] = [];
+      const notes: string[] = [
+        "LeadPipe is a pass-through: jobs move data server-side so chat never carries payloads.",
+        "No enrichment strategy. No paid vendor lookups.",
+        `Job kinds: ${JOB_KINDS.join(", ")}.`,
+      ];
       let recommended: JobKind | null = null;
       let candidate_count = 0;
-      let estimate = {
-        estimated_cost_usd: 0,
-        breakdown: {} as Record<string, unknown>,
-        notes: [] as string[],
-      };
-
-      // Default path is FREE. Never auto-recommend LeadMagic/waterfall from vague
-      // wording like "title" / "DM" / "email" — that produced ~$400 plans Claude
-      // kept proposing. Paid kinds only when the goal names them explicitly.
-      const wantsPaidVendor =
-        goal.includes("confirm_paid") ||
-        goal.includes("paid vendor") ||
-        goal.includes("find_dms_by_title") ||
-        goal.includes("enrich_contacts") ||
-        goal.includes("verify_emails") ||
-        (goal.includes("leadmagic") && goal.includes("paid"));
 
       if (
         goal.includes("requeue") ||
@@ -126,139 +108,32 @@ export function createServices(db: Db, config: Config): Services {
           (input.filters as { campaigns?: unknown[] } | undefined)?.campaigns ??
           [];
         candidate_count = Array.isArray(campaigns) ? campaigns.length : 0;
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: [
-            "FREE Smartlead import. Upload _clean.json to storage first.",
-            "Pass campaigns[{ campaign_id, storage_path, expected_upload, expected_final_count }].",
-          ],
-        };
-        notes.push(...estimate.notes);
+        notes.push("Pass campaigns[{ campaign_id, storage_path, expected_upload, expected_final_count }].");
       } else if (goal.includes("suppress")) {
         recommended = "build_suppression";
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: ["FREE — pass emails / campaign_ids in lp_run params."],
-        };
-        notes.push(...estimate.notes);
       } else if (goal.includes("smartlead") || goal.includes("sync")) {
         recommended = "sync_smartlead";
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: ["FREE — pass campaign_ids in lp_run params."],
-        };
-        notes.push(...estimate.notes);
       } else if (goal.includes("backfill")) {
         recommended = "backfill";
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: [
-            "FREE backfill into lp.*. Not a vendor lookup.",
-            "Basco: {source:'basco'}. Peterson gc: {source:'gc'}.",
-          ],
-        };
-        notes.push(...estimate.notes);
+        notes.push("Basco: {source:'basco'}. Peterson gc: {source:'gc'}.");
       } else if (
-        goal.includes("ingest_serp") ||
+        goal.includes("ingest") ||
         goal.includes("apify") ||
+        goal.includes("serp") ||
         goal.includes("linkedin") ||
-        goal.includes("persona") ||
-        goal.includes("service manager") ||
-        goal.includes("service director") ||
-        (goal.includes("serp") && !goal.includes("resolv")) ||
-        (!wantsPaidVendor &&
-          (goal.includes("people") ||
-            goal.includes("title") ||
-            goal.includes(" dm") ||
-            goal.startsWith("dm") ||
-            goal.includes("decision maker") ||
-            goal.includes("decision-maker")))
+        goal.includes("persona")
       ) {
         recommended = "ingest_serp";
-        candidate_count = 0;
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: [
-            "FREE — ingest_serp. No LeadMagic / GetLeads / AI Ark spend.",
-            "Params: storage_paths (or apify_run_ids) + target_titles + persona.",
-            "Do NOT call find_dms_by_title for franchise/SERP people discovery.",
-            "The ~$400 find_dms estimate is a paid vendor path and is opt-in only.",
-          ],
-        };
-        notes.push(...estimate.notes);
-      } else if (wantsPaidVendor && goal.includes("find_dms")) {
-        recommended = "find_dms_by_title";
-        candidate_count = await countCompaniesMissingDm(db, input.client_tag);
-        const e = estimateFindDmsCost(config, candidate_count);
-        estimate = { ...e, breakdown: e.breakdown };
-        notes.push(...e.notes);
-        notes.push(
-          "PAID LeadMagic path — requires params.confirm_paid_vendor=true to run.",
-        );
-        notes.push(
-          "Prefer ingest_serp ($0) when Apify SERP datasets already exist.",
-        );
-      } else if (wantsPaidVendor && goal.includes("enrich")) {
-        recommended = "enrich_contacts";
-        const f = { ...filters, missing_email: true };
-        candidate_count = await countContacts(db, f);
-        const maxTier = input.max_tier ?? "leadmagic";
-        const e = estimateEnrichCost(config, candidate_count, maxTier);
-        estimate = { ...e, breakdown: e.breakdown };
-        notes.push(...e.notes);
-        notes.push(
-          "PAID waterfall — requires params.confirm_paid_vendor=true to run.",
-        );
-      } else if (wantsPaidVendor && goal.includes("verif")) {
-        recommended = "verify_emails";
-        const f = { ...filters, has_email: true };
-        candidate_count = await countContacts(db, f);
-        const e = estimateVerifyCost(config, candidate_count);
-        estimate = { ...e, breakdown: e.breakdown };
-        notes.push(
-          "PAID verify — requires params.confirm_paid_vendor=true to run.",
-        );
-        notes.push(...e.notes);
-      } else if (goal.includes("resolv") || goal.includes("unresolved domain")) {
-        recommended = "resolve_companies";
-        candidate_count = await countCompanies(db, {
-          ...filters,
-          unresolved_domain: true,
-        });
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: [
-            "Domain resolve placeholder — $0 unless a SERP resolver key is wired.",
-            "Not LeadMagic. Not find_dms.",
-          ],
-        };
-        notes.push(...estimate.notes);
+        notes.push("Params: storage_paths|apify_run_ids + target_titles + persona.");
       } else {
-        notes.push(
-          `Could not map goal to a free job kind. Default kinds: ingest_serp, backfill, import_smartlead, sync_smartlead.`,
-        );
-        notes.push(
-          `Paid vendor kinds (find_dms_by_title / enrich_contacts / verify_emails) are OPT-IN only — ` +
-            `name the kind explicitly and pass confirm_paid_vendor=true. Do not invent a $400 plan.`,
-        );
+        notes.push("Could not map goal — pass job_kind explicitly to lp_run.");
         candidate_count = await countContacts(db, filters);
-        estimate = {
-          estimated_cost_usd: 0,
-          breakdown: {},
-          notes: [...notes],
-        };
       }
 
       return {
         candidate_count,
-        estimated_cost_usd: estimate.estimated_cost_usd,
-        breakdown: estimate.breakdown,
+        estimated_cost_usd: 0,
+        breakdown: {},
         recommended_kind: recommended,
         notes,
       };
@@ -267,26 +142,6 @@ export function createServices(db: Db, config: Config): Services {
     async run(input) {
       if (!JOB_KINDS.includes(input.job_kind)) {
         throw new Error(`Unknown job_kind: ${input.job_kind}`);
-      }
-
-      if (isPaidJobKind(input.job_kind)) {
-        const confirmed =
-          input.params?.confirm_paid_vendor === true ||
-          input.params?.confirm_paid_vendor === "true" ||
-          input.params?.confirm_paid_vendor === 1;
-        if (!confirmed) {
-          throw new Error(
-            `${input.job_kind} is a PAID vendor job and is blocked by default. ` +
-              `LeadPipe's normal path is free (ingest_serp / backfill / smartlead). ` +
-              `To spend vendor credits, pass params.confirm_paid_vendor=true AND approve_cost_usd. ` +
-              `Do not run this for Apify SERP / franchise people discovery — use ingest_serp ($0).`,
-          );
-        }
-        if (input.approve_cost_usd === undefined) {
-          throw new Error(
-            `${input.job_kind} requires explicit approve_cost_usd (paid vendor spend ceiling).`,
-          );
-        }
       }
 
       const params = sanitizeParams(input.job_kind, input.params ?? {});
@@ -391,9 +246,8 @@ export function createServices(db: Db, config: Config): Services {
         p_client_tag: clientTag,
       });
       const freePathNotes = [
-        "Gaps are counts only — not a cue to spend LeadMagic.",
-        "People discovery for franchise/SERP = ingest_serp ($0), never find_dms_by_title (~$400).",
-        "Paid vendor jobs require confirm_paid_vendor=true + approve_cost_usd.",
+        "Counts only. LeadPipe does not look up or enrich people.",
+        "To load SERP/Apify people: lp_run(ingest_serp). To load rooftops: lp_run(backfill).",
       ];
       if (!error && data) {
         return {
@@ -589,38 +443,11 @@ async function countCompanies(db: Db, filter: LeadFilter): Promise<number> {
   return count ?? 0;
 }
 
-/** Companies with no DM-grade emailed contact — what find_dms_by_title will seed. */
-async function countCompaniesMissingDm(
-  db: Db,
-  clientTag: string,
-): Promise<number> {
-  const { fetchAllDomains, fetchDomainsWithDmEmail } = await import(
-    "./lib/paginate.js"
-  );
-  const companies = await fetchAllDomains(db, clientTag);
-  const have = await fetchDomainsWithDmEmail(db, clientTag);
-  return companies.filter((d) => !have.has(d.toLowerCase())).length;
-}
-
 function sanitizeParams(
   kind: JobKind,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
   const out = { ...params };
-  if (kind === "enrich_contacts") {
-    const max = String(out.max_tier ?? "leadmagic");
-    if (!ENRICH_TIER_ORDER.includes(max as EnrichTier)) {
-      throw new Error(`Invalid max_tier: ${max}`);
-    }
-    out.max_tier = max;
-    if (String(out.vendor ?? "").toLowerCase().includes("pdl")) {
-      throw new Error("People Data Labs is forbidden");
-    }
-  }
-  // Preserve confirm flag for paid kinds (stripped from hash noise elsewhere if needed)
-  if (isPaidJobKind(kind) && out.confirm_paid_vendor != null) {
-    out.confirm_paid_vendor = true;
-  }
   if (kind === "backfill") {
     const v = validateBackfillParams(out);
     if (!v.ok) throw new Error(v.error);
@@ -628,7 +455,6 @@ function sanitizeParams(
   if (kind === "ingest_serp") {
     const v = validateIngestSerpParams(out);
     if (!v.ok) throw new Error(v.error);
-    // Normalize so idempotent hash is stable
     out.apify_run_ids = v.params.apify_run_ids;
     out.apify_dataset_ids = v.params.apify_dataset_ids;
     out.storage_paths = v.params.storage_paths;
@@ -642,62 +468,13 @@ function sanitizeParams(
 }
 
 async function estimateForKind(
-  db: Db,
-  config: Config,
-  kind: JobKind,
-  clientTag: string,
-  params: Record<string, unknown>,
+  _db: Db,
+  _config: Config,
+  _kind: JobKind,
+  _clientTag: string,
+  _params: Record<string, unknown>,
 ): Promise<{ estimated_cost_usd: number }> {
-  switch (kind) {
-    case "find_dms_by_title": {
-      const domains = (params.domains as string[] | undefined) ?? [];
-      const count =
-        domains.length || (await countCompaniesMissingDm(db, clientTag));
-      return estimateFindDmsCost(config, count);
-    }
-    case "enrich_contacts": {
-      let count = 0;
-      if (Array.isArray(params.contact_ids)) {
-        count = params.contact_ids.length;
-      } else {
-        count = await countContacts(db, {
-          client_tag: clientTag,
-          missing_email: true,
-          is_dm: params.is_dm === true ? true : undefined,
-          domains: params.domains as string[] | undefined,
-        });
-      }
-      return estimateEnrichCost(
-        config,
-        count,
-        (params.max_tier as EnrichTier) ?? "leadmagic",
-      );
-    }
-    case "verify_emails": {
-      const count = Array.isArray(params.contact_ids)
-        ? params.contact_ids.length
-        : await countContacts(db, { client_tag: clientTag, has_email: true });
-      return estimateVerifyCost(config, count);
-    }
-    case "resolve_companies": {
-      const count = Array.isArray(params.company_ids)
-        ? params.company_ids.length
-        : await countCompanies(db, {
-            client_tag: clientTag,
-            unresolved_domain: true,
-          });
-      const unit = config.costs.resolve_serp ?? 0.01;
-      return { estimated_cost_usd: +(count * unit).toFixed(4) };
-    }
-    case "sync_smartlead":
-    case "import_smartlead":
-    case "build_suppression":
-    case "backfill":
-    case "ingest_serp":
-      return { estimated_cost_usd: 0 };
-    default:
-      return { estimated_cost_usd: 0 };
-  }
+  return { estimated_cost_usd: 0 };
 }
 
 function estimateEta(job: JobRow): number | null {

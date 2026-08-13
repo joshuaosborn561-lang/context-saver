@@ -167,9 +167,7 @@ function toolDefinitions() {
     {
       name: "lp_plan",
       description:
-        "Estimate candidate count / cost. Default recommendations are FREE (ingest_serp, backfill, smartlead). " +
-        "Never treats gaps as a reason to spend LeadMagic. Paid kinds only if goal explicitly names them. " +
-        "Returns counts only — never rows.",
+        "Map a goal to a pass-through job kind. Always $0. No enrichment strategy. Counts only — never rows.",
       inputSchema: {
         type: "object",
         properties: {
@@ -177,16 +175,11 @@ function toolDefinitions() {
           goal: {
             type: "string",
             description:
-              "Natural language goal. Prefer free jobs: 'ingest serp', 'backfill basco'. " +
-              "Paid only when user asks to spend: 'paid find_dms_by_title', 'paid enrich_contacts'.",
+              "e.g. 'backfill basco', 'ingest serp', 'import smartlead'.",
           },
           filters: {
             type: "object",
-            description: "Optional LeadFilter fields (domain, is_dm, missing_email, ...)",
-          },
-          max_tier: {
-            type: "string",
-            enum: ["getleads", "aiark", "leadmagic", "fullenrich"],
+            description: "Optional LeadFilter fields",
           },
         },
         required: ["client_tag", "goal"],
@@ -195,15 +188,11 @@ function toolDefinitions() {
     {
       name: "lp_run",
       description:
-        "Queue a job. Returns job_id + status + estimate. Identical params attach to existing run (idempotent). Cost-gated. " +
-        "backfill params (unknown keys rejected): source ('gc'|'basco'|'peterson'|'permit_parcel.operators'|…) " +
-        "OR source_schema+source_table(s); optional icp_only, owner_segments, where. " +
-        "Basco: {source:'basco'} → client_basco.leads. " +
-        "DEFAULT FREE jobs: ingest_serp / backfill / import_smartlead. " +
-        "ingest_serp: params={storage_paths|apify_run_ids, target_titles, persona}. " +
-        "PAID jobs (find_dms_by_title, enrich_contacts, verify_emails) are BLOCKED unless " +
-        "params.confirm_paid_vendor=true AND approve_cost_usd is set — do not invent $400 plans. " +
-        "Zero source rows → failed (never silent success).",
+        "Queue a pass-through job. Returns job_id + status. No enrichment. " +
+        "Kinds: backfill | ingest_serp | import_smartlead | sync_smartlead | build_suppression. " +
+        "backfill: source ('gc'|'basco'|'peterson'|…). " +
+        "ingest_serp: {storage_paths|apify_run_ids, target_titles, persona}. " +
+        "Zero source rows → failed.",
       inputSchema: {
         type: "object",
         properties: {
@@ -212,7 +201,7 @@ function toolDefinitions() {
           params: { type: "object" },
           approve_cost_usd: {
             type: "number",
-            description: "Cost ceiling for this run. Job refuses to start above this.",
+            description: "Unused for pass-through jobs (always $0). Optional.",
           },
         },
         required: ["job_kind", "client_tag"],
@@ -284,7 +273,6 @@ async function dispatch(
         client_tag: String(args.client_tag ?? ""),
         goal: String(args.goal ?? ""),
         filters: args.filters as never,
-        max_tier: args.max_tier as never,
       });
     case "lp_run":
       return services.run({
@@ -376,7 +364,7 @@ function classifyErrorMessage(message: string): string {
 function hintFor(code: string): string | undefined {
   switch (code) {
     case "empty_input":
-      return "Run lp_run(backfill, …) for this client_tag before find_dms / enrich.";
+      return "Run lp_run(backfill, …) or ingest_serp for this client_tag first.";
     case "invalid_params":
       return "Check params against lp_run description; unknown keys are rejected.";
     case "not_found":

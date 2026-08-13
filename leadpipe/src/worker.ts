@@ -131,7 +131,6 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
           client_tag: String(body.client_tag ?? ""),
           goal: String(body.goal ?? ""),
           filters: body.filters as never,
-          max_tier: body.max_tier as never,
         });
         json(res, 200, result);
         return;
