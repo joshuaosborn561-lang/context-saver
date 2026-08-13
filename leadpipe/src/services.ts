@@ -547,10 +547,13 @@ function sanitizeParams(
     if (!v.ok) throw new Error(v.error);
     // Normalize so idempotent hash is stable
     out.apify_run_ids = v.params.apify_run_ids;
+    out.apify_dataset_ids = v.params.apify_dataset_ids;
+    out.storage_paths = v.params.storage_paths;
     out.target_titles = v.params.target_titles;
     out.persona = v.params.persona;
     out.require_company_match = v.params.require_company_match !== false;
     delete out.run_ids;
+    delete out.dataset_ids;
   }
   return out;
 }

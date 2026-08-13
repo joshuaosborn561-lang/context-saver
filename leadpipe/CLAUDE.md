@@ -34,14 +34,15 @@ lp_run(
   client_tag="basco",
   approve_cost_usd=0,
   params={
-    "apify_run_ids": ["runId1", "runId2", …],
+    "apify_run_ids": ["runId1", "runId2", …],   # needs APIFY_TOKEN with read access
+    # OR "storage_paths": ["serp/basco/<runId>.json", …],  # staged JSON arrays
     "target_titles": "Service Director,Fixed Operations Director,Service Manager,Assistant Service Manager,Warranty Administrator,Parts and Service Director",
     "persona": "service_side"
   }
 )
 ```
 
-Then `lp_status`. Requires `APIFY_TOKEN` on the LeadPipe service. Filters company match + titles server-side; writes `lp.contacts` and `client_<tag>.contacts` with `persona`.
+Then `lp_status`. Prefer `storage_paths` when the service Apify token lacks run-read permission. Filters company match + titles server-side; writes `lp.contacts` and `client_<tag>.contacts` with `persona`.
 
 ## Backfill (required before find_dms)
 

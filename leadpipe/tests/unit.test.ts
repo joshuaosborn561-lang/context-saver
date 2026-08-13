@@ -192,7 +192,7 @@ describe("ingest_serp params", () => {
     if (!v.ok) assert.match(v.error, /Unknown ingest_serp params: foo/);
   });
 
-  it("requires run ids, titles, persona", () => {
+  it("requires source + titles + persona", () => {
     assert.equal(validateIngestSerpParams({}).ok, false);
     assert.equal(
       validateIngestSerpParams({ apify_run_ids: ["x"], persona: "p" }).ok,
@@ -207,7 +207,22 @@ describe("ingest_serp params", () => {
       persona: "service_side",
     });
     assert.equal(v.ok, true);
-    if (v.ok) assert.deepEqual(v.params.apify_run_ids, ["a", "b", "c"]);
+    if (v.ok) {
+      assert.deepEqual(v.params.apify_run_ids, ["a", "b", "c"]);
+      assert.deepEqual(v.params.entity_keys, ["run:a", "run:b", "run:c"]);
+    }
+  });
+
+  it("accepts storage_paths without Apify runs", () => {
+    const v = validateIngestSerpParams({
+      storage_paths: ["serp/basco/a.json"],
+      target_titles: "Service Manager",
+      persona: "service_side",
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) {
+      assert.deepEqual(v.params.entity_keys, ["storage:serp/basco/a.json"]);
+    }
   });
 });
 

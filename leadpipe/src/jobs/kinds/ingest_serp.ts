@@ -3,7 +3,10 @@ import type { Config } from "../../config.js";
 import type { Db, JobRow } from "../../db/client.js";
 import type { JobHandler } from "../runner.js";
 import { seedEntityKeys, storeRawPayload } from "../runner.js";
-import { loadSerpItemsForRun } from "../../lib/apify.js";
+import {
+  fetchDatasetItems,
+  loadSerpItemsForRun,
+} from "../../lib/apify.js";
 import {
   validateIngestSerpParams,
   type IngestSerpParams,
@@ -26,41 +29,48 @@ import {
  */
 export const runIngestSerp: JobHandler = {
   async seed(ctx) {
-    if (!ctx.config.apifyToken) {
-      throw new Error(
-        "ingest_serp requires APIFY_TOKEN (or LEADPIPE_APIFY_TOKEN) on the LeadPipe service.",
-      );
-    }
     const v = validateIngestSerpParams(
       (ctx.job.params ?? {}) as Record<string, unknown>,
     );
     if (!v.ok) throw new Error(v.error);
 
-    const unique = [...new Set(v.params.apify_run_ids)];
+    const needsApify =
+      v.params.apify_run_ids.length > 0 ||
+      v.params.apify_dataset_ids.length > 0;
+    if (needsApify && !ctx.config.apifyToken) {
+      throw new Error(
+        "ingest_serp with apify_run_ids/apify_dataset_ids requires APIFY_TOKEN " +
+          "(token must be allowed to read those runs/datasets). " +
+          "Or stage JSON in storage and pass storage_paths instead.",
+      );
+    }
+
+    const unique = [...new Set(v.params.entity_keys)];
     await seedEntityKeys(ctx.db, ctx.job.id, unique);
     return { rows_total: unique.length };
   },
 
-  async processRow(ctx, runId) {
+  async processRow(ctx, entityKey) {
     const v = validateIngestSerpParams(
       (ctx.job.params ?? {}) as Record<string, unknown>,
     );
     if (!v.ok) throw new Error(v.error);
     const params = v.params;
     const titles = parseTargetTitles(params.target_titles);
-    const token = ctx.config.apifyToken!;
 
-    const { meta, items } = await loadSerpItemsForRun(token, runId);
+    const { source, items, meta } = await loadItemsForEntity(
+      ctx,
+      entityKey,
+    );
+
     await storeRawPayload(ctx.db, {
       job_id: ctx.job.id,
       vendor: "apify_serp",
-      entity_key: `run:${runId}`,
+      entity_key: entityKey,
       payload: {
-        run_id: runId,
-        status: meta.status,
-        dataset_id: meta.defaultDatasetId,
+        source,
+        ...meta,
         item_count: items.length,
-        // Keep a compact sample for debug — full organic blobs stay in Apify.
         sample_terms: items.slice(0, 5).map((it) => {
           const r = it as { searchQuery?: { term?: string } };
           return r.searchQuery?.term ?? null;
@@ -78,7 +88,7 @@ export const runIngestSerp: JobHandler = {
         useful: false,
         cost_usd: 0,
         summary: {
-          run_id: runId,
+          entity_key: entityKey,
           error: "not_serp_shaped",
           item_count: items.length,
         },
@@ -121,8 +131,9 @@ export const runIngestSerp: JobHandler = {
       useful: written > 0,
       cost_usd: 0,
       summary: {
-        run_id: runId,
-        dataset_id: meta.defaultDatasetId,
+        entity_key: entityKey,
+        source,
+        ...meta,
         serp_items: items.length,
         people_matched: people.length,
         contacts_written: written,
@@ -159,6 +170,92 @@ export const runIngestSerp: JobHandler = {
     };
   },
 };
+
+async function loadItemsForEntity(
+  ctx: { db: Db; config: Config },
+  entityKey: string,
+): Promise<{
+  source: string;
+  items: unknown[];
+  meta: Record<string, unknown>;
+}> {
+  if (entityKey.startsWith("run:")) {
+    const runId = entityKey.slice("run:".length);
+    const token = ctx.config.apifyToken;
+    if (!token) {
+      throw new Error(
+        `APIFY_TOKEN required to read run ${runId}. Stage JSON and use storage_paths instead.`,
+      );
+    }
+    try {
+      const { meta, items } = await loadSerpItemsForRun(token, runId);
+      return {
+        source: "apify_run",
+        items,
+        meta: {
+          run_id: runId,
+          status: meta.status,
+          dataset_id: meta.defaultDatasetId,
+        },
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/403|insufficient-permissions/i.test(msg)) {
+        throw new Error(
+          `Apify token cannot read run ${runId} (403). ` +
+            `Use a token with run/dataset read access, or upload the dataset JSON to storage and pass storage_paths.`,
+        );
+      }
+      throw err;
+    }
+  }
+
+  if (entityKey.startsWith("dataset:")) {
+    const datasetId = entityKey.slice("dataset:".length);
+    const token = ctx.config.apifyToken;
+    if (!token) {
+      throw new Error(`APIFY_TOKEN required to read dataset ${datasetId}`);
+    }
+    const items = await fetchDatasetItems(token, datasetId);
+    return {
+      source: "apify_dataset",
+      items,
+      meta: { dataset_id: datasetId },
+    };
+  }
+
+  if (entityKey.startsWith("storage:")) {
+    const path = entityKey.slice("storage:".length);
+    const bucket = ctx.config.exportBucket;
+    const { data, error } = await ctx.db.storage.from(bucket).download(path);
+    if (error || !data) {
+      throw new Error(
+        `storage download ${bucket}/${path} failed: ${error?.message ?? "empty"}`,
+      );
+    }
+    const text = await data.text();
+    const parsed = JSON.parse(text) as unknown;
+    const items = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { items?: unknown[] })?.items)
+        ? (parsed as { items: unknown[] }).items
+        : null;
+    if (!items) {
+      throw new Error(
+        `storage ${path}: expected a JSON array of SERP items (or {items:[…]})`,
+      );
+    }
+    return {
+      source: "storage",
+      items,
+      meta: { storage_path: path, bucket },
+    };
+  }
+
+  throw new Error(
+    `Unknown ingest_serp entity_key "${entityKey}". Expected run:|dataset:|storage: prefix.`,
+  );
+}
 
 type DomainIndex = {
   byNormName: Map<string, string>;

@@ -5,6 +5,9 @@
 export const INGEST_SERP_ALLOWED_KEYS = [
   "apify_run_ids",
   "run_ids",
+  "apify_dataset_ids",
+  "dataset_ids",
+  "storage_paths",
   "target_titles",
   "persona",
   "require_company_match",
@@ -13,7 +16,11 @@ export const INGEST_SERP_ALLOWED_KEYS = [
 ] as const;
 
 export type IngestSerpParams = {
+  /** Entity keys seeded as run:<id> / dataset:<id> / storage:<path> */
+  entity_keys: string[];
   apify_run_ids: string[];
+  apify_dataset_ids: string[];
+  storage_paths: string[];
   target_titles: string | string[];
   persona: string;
   require_company_match?: boolean;
@@ -22,6 +29,19 @@ export type IngestSerpParams = {
   /** Write lp.contacts (default true). */
   write_lp?: boolean;
 };
+
+function asStringList(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x).trim()).filter(Boolean);
+  }
+  if (typeof raw === "string") {
+    return raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
 
 export type IngestSerpValidation =
   | { ok: true; params: IngestSerpParams }
@@ -43,22 +63,24 @@ export function validateIngestSerpParams(
     };
   }
 
-  const idsRaw = raw.apify_run_ids ?? raw.run_ids;
-  let apify_run_ids: string[] = [];
-  if (Array.isArray(idsRaw)) {
-    apify_run_ids = idsRaw.map((x) => String(x).trim()).filter(Boolean);
-  } else if (typeof idsRaw === "string") {
-    apify_run_ids = idsRaw
-      .split(/[,\s]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
+  const apify_run_ids = asStringList(raw.apify_run_ids ?? raw.run_ids);
+  const apify_dataset_ids = asStringList(
+    raw.apify_dataset_ids ?? raw.dataset_ids,
+  );
+  const storage_paths = asStringList(raw.storage_paths);
 
-  if (!apify_run_ids.length) {
+  const entity_keys = [
+    ...apify_run_ids.map((id) => `run:${id}`),
+    ...apify_dataset_ids.map((id) => `dataset:${id}`),
+    ...storage_paths.map((p) => `storage:${p}`),
+  ];
+
+  if (!entity_keys.length) {
     return {
       ok: false,
       error:
-        "ingest_serp requires apify_run_ids (array or comma-separated string of Apify actor run IDs).",
+        "ingest_serp requires one of: apify_run_ids, apify_dataset_ids, or storage_paths " +
+        "(JSON arrays of google-search-scraper items staged in Supabase storage).",
     };
   }
 
@@ -88,7 +110,10 @@ export function validateIngestSerpParams(
   return {
     ok: true,
     params: {
+      entity_keys,
       apify_run_ids,
+      apify_dataset_ids,
+      storage_paths,
       target_titles: target_titles as string | string[],
       persona,
       require_company_match: raw.require_company_match !== false,
