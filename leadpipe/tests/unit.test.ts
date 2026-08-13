@@ -10,7 +10,11 @@ import {
 } from "../src/lib/cost.js";
 import { stripHtmlFields } from "../src/vendors/index.js";
 import { hashParams } from "../src/db/client.js";
-import { DEFAULT_COSTS_USD, type Config } from "../src/config.js";
+import {
+  DEFAULT_COSTS_USD,
+  isPaidJobKind,
+  type Config,
+} from "../src/config.js";
 import {
   assertBatchImport,
   chunkLeads,
@@ -123,6 +127,16 @@ describe("backfill param validation", () => {
   it("rejects empty params", () => {
     const v = validateBackfillParams({});
     assert.equal(v.ok, false);
+  });
+});
+
+describe("paid job kinds", () => {
+  it("marks vendor spend kinds as paid", () => {
+    assert.equal(isPaidJobKind("find_dms_by_title"), true);
+    assert.equal(isPaidJobKind("enrich_contacts"), true);
+    assert.equal(isPaidJobKind("verify_emails"), true);
+    assert.equal(isPaidJobKind("ingest_serp"), false);
+    assert.equal(isPaidJobKind("backfill"), false);
   });
 });
 

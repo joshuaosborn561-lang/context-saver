@@ -32,14 +32,19 @@ Claude (chat) ──job requests──▶ LeadPipe worker (Railway)
 
 ## Job kinds
 
-1. `find_dms_by_title` — employee_finder → title filter → email on survivors only (**paid**)
-2. `enrich_contacts` — getleads → AI Ark → LeadMagic → FullEnrich (`max_tier`)
-3. `verify_emails` — MillionVerifier → No2Bounce on ambiguous
-4. `resolve_companies` — SERP-first (Maps-only disabled)
-5. `sync_smartlead` — campaign stats with HTML bodies stripped server-side
-6. `import_smartlead` — requeue/import from storage; assert live membership (not just upload_count)
-7. `backfill` — copy source tables into `lp.*` for a `client_tag`
-8. `ingest_serp` — **free** ingest of finished Apify `google-search-scraper` runs (`apify_run_ids` + `target_titles` + `persona`); company/title filter server-side; no chat payload
+**Free (default):**
+
+1. `ingest_serp` — Apify google-search-scraper → company/title filter → `lp.contacts` + `client_<tag>.contacts` (`persona`)
+2. `backfill` — copy source tables into `lp.*`
+3. `import_smartlead` / `sync_smartlead` / `build_suppression`
+
+**Paid (opt-in only — requires `confirm_paid_vendor=true` + `approve_cost_usd`):**
+
+4. `find_dms_by_title` — LeadMagic employee/email finder (do **not** use for SERP/franchise ingest)
+5. `enrich_contacts` — getleads → AI Ark → LeadMagic → FullEnrich
+6. `verify_emails` — MillionVerifier → No2Bounce
+
+Also: `resolve_companies` (domain resolve placeholder).
 7. `build_suppression` — mark contacts `suppressed=true`
 8. `backfill` — `gc.contacts` / `gc.companies` / `peterson_leads` → `lp.*`
 

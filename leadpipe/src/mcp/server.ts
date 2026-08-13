@@ -167,7 +167,9 @@ function toolDefinitions() {
     {
       name: "lp_plan",
       description:
-        "Estimate candidate count and cost for a lead goal. Returns counts and cost breakdown only — never rows.",
+        "Estimate candidate count / cost. Default recommendations are FREE (ingest_serp, backfill, smartlead). " +
+        "Never treats gaps as a reason to spend LeadMagic. Paid kinds only if goal explicitly names them. " +
+        "Returns counts only — never rows.",
       inputSchema: {
         type: "object",
         properties: {
@@ -175,7 +177,8 @@ function toolDefinitions() {
           goal: {
             type: "string",
             description:
-              "Natural language goal, e.g. 'enrich unresolved DMs', 'find DMs by title', 'verify emails'",
+              "Natural language goal. Prefer free jobs: 'ingest serp', 'backfill basco'. " +
+              "Paid only when user asks to spend: 'paid find_dms_by_title', 'paid enrich_contacts'.",
           },
           filters: {
             type: "object",
@@ -196,9 +199,10 @@ function toolDefinitions() {
         "backfill params (unknown keys rejected): source ('gc'|'basco'|'peterson'|'permit_parcel.operators'|…) " +
         "OR source_schema+source_table(s); optional icp_only, owner_segments, where. " +
         "Basco: {source:'basco'} → client_basco.leads. " +
-        "ingest_serp (FREE — do not pull Apify into chat): " +
-        "params={apify_run_ids:['…'], target_titles:'Service Director,…', persona:'service_side'}. " +
-        "Company+title filter server-side → lp.contacts + client_<tag>.contacts. " +
+        "DEFAULT FREE jobs: ingest_serp / backfill / import_smartlead. " +
+        "ingest_serp: params={storage_paths|apify_run_ids, target_titles, persona}. " +
+        "PAID jobs (find_dms_by_title, enrich_contacts, verify_emails) are BLOCKED unless " +
+        "params.confirm_paid_vendor=true AND approve_cost_usd is set — do not invent $400 plans. " +
         "Zero source rows → failed (never silent success).",
       inputSchema: {
         type: "object",

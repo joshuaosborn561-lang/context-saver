@@ -39,6 +39,19 @@ export const JOB_KINDS = [
 
 export type JobKind = (typeof JOB_KINDS)[number];
 
+/** Vendor-spend jobs — never auto-recommend; require explicit confirm_paid_vendor. */
+export const PAID_JOB_KINDS = [
+  "find_dms_by_title",
+  "enrich_contacts",
+  "verify_emails",
+] as const;
+
+export type PaidJobKind = (typeof PAID_JOB_KINDS)[number];
+
+export function isPaidJobKind(kind: string): kind is PaidJobKind {
+  return (PAID_JOB_KINDS as readonly string[]).includes(kind);
+}
+
 export const CLIENT_TAGS = [
   "peterson",
   "basco",
