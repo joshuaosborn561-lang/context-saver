@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -6,7 +5,6 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db/client.js";
@@ -19,7 +17,11 @@ import { JOB_KINDS } from "../config.js";
  *
  * Transports:
  * - stdio (local Cursor)
- * - Streamable HTTP at /mcp (Railway URL for Claude)
+ * - Streamable HTTP at /mcp (Railway URL for Claude) — STATELESS
+ *
+ * Stateless matters: Claude remote connectors keep a session id across
+ * Railway deploys; in-memory session maps then 400 every tools/call with
+ * an opaque client error. Fresh transport per POST fixes that.
  */
 
 export function createLeadpipeMcpServer(services: Services): Server {
@@ -35,13 +37,27 @@ export function createLeadpipeMcpServer(services: Services): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    console.error(
+      `[leadpipe] tools/call inbound name=${name} keys=${Object.keys(args).sort().join(",")}`,
+    );
     try {
       const result = await dispatch(services, name, args);
-      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[leadpipe] tools/call ok name=${name}`);
       return {
-        content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, tool: name, result }, null, 2),
+          },
+        ],
+      };
+    } catch (err) {
+      const typed = toTypedError(name, err);
+      console.error(
+        `[leadpipe] tools/call FAILED name=${name} code=${typed.code}: ${typed.error}`,
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(typed, null, 2) }],
         isError: true,
       };
     }
@@ -57,85 +73,74 @@ export async function startMcpServer(db: Db, config: Config): Promise<void> {
   await server.connect(transport);
 }
 
-/** Session-scoped Streamable HTTP MCP for Claude remote connectors. */
+/** Stateless Streamable HTTP MCP for Claude remote connectors. */
 export function createHttpMcpHandler(
   db: Db,
   config: Config,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const services = createServices(db, config);
-  const transports = new Map<string, StreamableHTTPServerTransport>();
 
   return async (req, res) => {
     if (!authorizeMcp(req, config)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "unauthorized" }));
+      jsonError(res, 401, {
+        ok: false,
+        code: "mcp_unauthorized",
+        error: "unauthorized",
+        message: "Bearer token required (LEADPIPE_MCP_TOKEN).",
+      });
       return;
     }
-
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     try {
       if (req.method === "POST") {
         const body = await readBodyJson(req);
-
-        if (sessionId && transports.has(sessionId)) {
-          const transport = transports.get(sessionId)!;
-          await transport.handleRequest(req, res, body);
-          return;
-        }
-
-        if (!sessionId && isInitializeRequest(body)) {
-          const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-            // JSON responses are more reliable with Claude.ai custom connectors
-            // than SSE streams behind some proxies.
-            enableJsonResponse: true,
-            onsessioninitialized: (id) => {
-              transports.set(id, transport);
-            },
-          });
-          transport.onclose = () => {
-            const id = transport.sessionId;
-            if (id) transports.delete(id);
-          };
-          const server = createLeadpipeMcpServer(services);
-          await server.connect(transport);
-          await transport.handleRequest(req, res, body);
-          return;
-        }
-
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: "bad_request",
-            message: "Missing or unknown mcp-session-id; send initialize first.",
-          }),
+        const method =
+          body && typeof body === "object" && "method" in body
+            ? String((body as { method?: unknown }).method ?? "")
+            : "";
+        console.error(
+          `[leadpipe] mcp POST method=${method || "?"} session=${String(req.headers["mcp-session-id"] ?? "-")}`,
         );
+
+        // Stateless: one transport + server per request. Survives deploys and
+        // ignores stale mcp-session-id headers from Claude connectors.
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        });
+        const server = createLeadpipeMcpServer(services);
+        await server.connect(transport);
+        try {
+          await transport.handleRequest(req, res, body);
+        } finally {
+          await transport.close().catch(() => undefined);
+          await server.close().catch(() => undefined);
+        }
         return;
       }
 
       if (req.method === "GET" || req.method === "DELETE") {
-        if (!sessionId || !transports.has(sessionId)) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "invalid_session" }));
-          return;
-        }
-        const transport = transports.get(sessionId)!;
-        await transport.handleRequest(req, res);
+        jsonError(res, 405, {
+          ok: false,
+          code: "mcp_stateless",
+          error: "method_not_allowed",
+          message:
+            "LeadPipe MCP is stateless JSON over POST. GET/DELETE SSE sessions are not used — reconnect and POST initialize + tools/call.",
+        });
         return;
       }
 
-      res.writeHead(405, { Allow: "GET, POST, DELETE" });
+      res.writeHead(405, { Allow: "POST, OPTIONS" });
       res.end();
     } catch (err) {
       console.error("[leadpipe] mcp http error", err);
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
+        jsonError(res, 500, {
+          ok: false,
+          code: "mcp_http_error",
+          error: err instanceof Error ? err.message : String(err),
+          message: "Unhandled MCP HTTP transport error.",
+        });
       }
     }
   };
@@ -143,7 +148,6 @@ export function createHttpMcpHandler(
 
 function authorizeMcp(req: IncomingMessage, config: Config): boolean {
   const expected = config.mcpAuthToken;
-  // No token configured → open access
   if (!expected || config.mcpAllowUnauthenticated) return true;
   const header = req.headers.authorization ?? "";
   if (header === `Bearer ${expected}`) return true;
@@ -232,13 +236,14 @@ function toolDefinitions() {
     },
     {
       name: "lp_sample",
-      description: "Up to 10 rows for eyeballing quality only. Hard-capped at 10.",
+      description:
+        "Return ≤10 sample rows for eyeballing quality. Never more than 10.",
       inputSchema: {
         type: "object",
         properties: {
           client_tag: { type: "string" },
           filter: { type: "object" },
-          n: { type: "integer", minimum: 1, maximum: 10 },
+          n: { type: "number" },
           table: { type: "string", enum: ["contacts", "companies"] },
         },
         required: ["client_tag"],
@@ -269,15 +274,15 @@ async function dispatch(
   switch (name) {
     case "lp_plan":
       return services.plan({
-        client_tag: String(args.client_tag),
-        goal: String(args.goal),
+        client_tag: String(args.client_tag ?? ""),
+        goal: String(args.goal ?? ""),
         filters: args.filters as never,
         max_tier: args.max_tier as never,
       });
     case "lp_run":
       return services.run({
         job_kind: args.job_kind as never,
-        client_tag: String(args.client_tag),
+        client_tag: String(args.client_tag ?? ""),
         params: (args.params as Record<string, unknown>) ?? {},
         approve_cost_usd:
           args.approve_cost_usd !== undefined
@@ -285,16 +290,16 @@ async function dispatch(
             : undefined,
       });
     case "lp_status":
-      return services.status(String(args.job_id));
+      return services.status(String(args.job_id ?? ""));
     case "lp_inventory":
       return services.inventory(
-        String(args.client_tag),
+        String(args.client_tag ?? ""),
         args.scope ? String(args.scope) : undefined,
       );
     case "lp_sample": {
       const n = Math.min(Number(args.n ?? 5), 10);
       return services.sample({
-        client_tag: String(args.client_tag),
+        client_tag: String(args.client_tag ?? ""),
         filter: args.filter as never,
         n,
         table: args.table as never,
@@ -302,13 +307,80 @@ async function dispatch(
     }
     case "lp_export":
       return services.export({
-        client_tag: String(args.client_tag),
+        client_tag: String(args.client_tag ?? ""),
         filter: args.filter as never,
         format: args.format as never,
       });
     default:
-      throw new Error(`Unknown tool: ${name}`);
+      throw Object.assign(new Error(`Unknown tool: ${name}`), {
+        code: "unknown_tool",
+      });
   }
+}
+
+function toTypedError(
+  tool: string,
+  err: unknown,
+): {
+  ok: false;
+  code: string;
+  error: string;
+  tool: string;
+  message: string;
+  hint?: string;
+} {
+  const message = err instanceof Error ? err.message : String(err);
+  const code =
+    err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "string"
+      ? (err as { code: string }).code
+      : classifyErrorMessage(message);
+  return {
+    ok: false,
+    code,
+    error: message,
+    tool,
+    message,
+    hint: hintFor(code),
+  };
+}
+
+function classifyErrorMessage(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("unauthorized") || m.includes("jwt")) return "auth_error";
+  if (m.includes("timeout") || m.includes("timed out")) return "timeout";
+  if (m.includes("unknown backfill") || m.includes("unknown job_kind")) {
+    return "invalid_params";
+  }
+  if (m.includes("zero companies") || m.includes("zero source") || m.includes("rows_total=0")) {
+    return "empty_input";
+  }
+  if (m.includes("not found") || m.includes("pgrst205")) return "not_found";
+  if (m.includes("exceeds") && m.includes("ceiling")) return "cost_blocked";
+  return "tool_error";
+}
+
+function hintFor(code: string): string | undefined {
+  switch (code) {
+    case "empty_input":
+      return "Run lp_run(backfill, …) for this client_tag before find_dms / enrich.";
+    case "invalid_params":
+      return "Check params against lp_run description; unknown keys are rejected.";
+    case "not_found":
+      return "Schema/table missing or not exposed to PostgREST.";
+    case "mcp_unauthorized":
+      return "Reconnect the LeadPipe connector or set LEADPIPE_MCP_TOKEN.";
+    default:
+      return undefined;
+  }
+}
+
+function jsonError(
+  res: ServerResponse,
+  status: number,
+  body: Record<string, unknown>,
+): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
 }
 
 function readBodyJson(req: IncomingMessage): Promise<unknown> {
