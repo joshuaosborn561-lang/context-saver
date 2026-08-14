@@ -27,7 +27,10 @@ Claude (chat) ──job requests──▶ LeadPipe worker (Railway)
 
 1. `backfill` — source tables → `lp.*`
 2. `ingest_serp` — Apify SERP JSON → contacts (`persona`)
-3. `import_smartlead` / `sync_smartlead` / `build_suppression`
+3. `ingest_csv` — CSV/XLSX URLs → `lp.{client_tag}_ingested_leads` (counts only)
+4. `import_smartlead` / `sync_smartlead` / `build_suppression`
+
+`ingest_csv` params: `urls[]`, `source_label`, optional `column_map`, `dedupe_key`, `exclude_name_patterns`, `exclude_domain_list`. Sample/export with `table: "ingested_leads"`. Inventory `by_source_tier.ingested` counts those rows.
 
 ## Non-negotiables
 

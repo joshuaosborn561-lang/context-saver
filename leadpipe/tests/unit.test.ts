@@ -12,6 +12,13 @@ import {
   verifyCampaignTotals,
 } from "../src/lib/smartlead_import.js";
 import { validateIngestSerpParams } from "../src/lib/ingest_serp_params.js";
+import { validateIngestCsvParams } from "../src/lib/ingest_csv_params.js";
+import {
+  mapRawRow,
+  resolveColumnMap,
+  rowPassesFilters,
+} from "../src/lib/csv_headers.js";
+import { parseCsv, parseTabularFile } from "../src/lib/csv_download.js";
 import {
   companyMatches,
   extractSerpPeople,
@@ -33,6 +40,7 @@ describe("job kinds are pass-through only", () => {
     assert.ok(!JOB_KINDS.includes("enrich_contacts" as never));
     assert.ok(!JOB_KINDS.includes("verify_emails" as never));
     assert.ok(JOB_KINDS.includes("ingest_serp"));
+    assert.ok(JOB_KINDS.includes("ingest_csv"));
     assert.ok(JOB_KINDS.includes("backfill"));
   });
 });
@@ -222,5 +230,109 @@ describe("smartlead import assertions", () => {
 
   it("chunks leads for resumable batches", () => {
     assert.equal(chunkLeads(Array(251).fill(0), 100).length, 3);
+  });
+});
+
+describe("ingest_csv params", () => {
+  it("requires urls and source_label", () => {
+    const v = validateIngestCsvParams({});
+    assert.equal(v.ok, false);
+  });
+
+  it("rejects unknown keys", () => {
+    const v = validateIngestCsvParams({
+      urls: ["https://example.com/a.csv"],
+      source_label: "test",
+      foo: 1,
+    });
+    assert.equal(v.ok, false);
+  });
+
+  it("accepts getleads-shaped params", () => {
+    const v = validateIngestCsvParams({
+      urls: ["https://example.com/a.csv"],
+      source_label: "getleads_crowdstrike_20260814",
+      dedupe_key: "email",
+      exclude_name_patterns: ["MSP", "Reseller"],
+      exclude_domain_list: ["https://WWW.Spam.com/path"],
+    });
+    assert.equal(v.ok, true);
+    if (v.ok) {
+      assert.equal(v.params.exclude_domain_list[0], "spam.com");
+      assert.deepEqual(v.params.exclude_name_patterns, ["msp", "reseller"]);
+    }
+  });
+});
+
+describe("csv header dialects", () => {
+  it("auto-detects getleads headers", () => {
+    const r = resolveColumnMap([
+      "First Name",
+      "Last Name",
+      "Email",
+      "Current Job Title",
+      "Company Name",
+      "Company Domain",
+      "Email Verification Status",
+    ]);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.dialect, "getleads");
+      assert.equal(r.map.email, "Email");
+      assert.equal(r.map.company_domain, "Company Domain");
+      assert.equal(r.map.title, "Current Job Title");
+    }
+  });
+
+  it("fails clearly when email/domain missing", () => {
+    const r = resolveColumnMap(["First Name", "Company Name"]);
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.match(r.error, /Cannot resolve required fields/);
+      assert.match(r.error, /Headers found/);
+    }
+  });
+
+  it("applies exclude filters", () => {
+    const row = mapRawRow(
+      {
+        Email: "a@b.com",
+        "Company Domain": "acme.com",
+        "Company Name": "Acme MSP Services",
+      },
+      {
+        first_name: null,
+        last_name: null,
+        email: "Email",
+        title: null,
+        company_name: "Company Name",
+        company_domain: "Company Domain",
+        state: null,
+        industry: null,
+        employee_range: null,
+      },
+    );
+    assert.equal(rowPassesFilters(row, ["msp"], []), false);
+    assert.equal(rowPassesFilters(row, [], ["acme.com"]), false);
+    assert.equal(rowPassesFilters(row, ["reseller"], ["other.com"]), true);
+  });
+});
+
+describe("csv parse", () => {
+  it("parses quoted commas", () => {
+    const rows = parseCsv('a,b\n"1,2",3\n');
+    assert.deepEqual(rows[0], ["a", "b"]);
+    assert.deepEqual(rows[1], ["1,2", "3"]);
+  });
+
+  it("parses buffer as csv", () => {
+    const buf = Buffer.from("Email,Company Domain\na@b.com,acme.com\n", "utf8");
+    const p = parseTabularFile(buf, { filename_hint: "x.csv" });
+    assert.equal(p.ok, true);
+    if (p.ok) {
+      assert.equal(p.format, "csv");
+      assert.equal(p.rows.length, 1);
+      assert.equal(p.rows[0]!.Email, "a@b.com");
+    }
   });
 });

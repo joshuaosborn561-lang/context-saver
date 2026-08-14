@@ -7,6 +7,7 @@
 export const JOB_KINDS = [
   "backfill",
   "ingest_serp",
+  "ingest_csv",
   "sync_smartlead",
   "import_smartlead",
   "build_suppression",

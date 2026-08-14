@@ -10,6 +10,10 @@ import {
 import { applyCompanyFilter, applyContactFilter, type LeadFilter } from "./lib/filters.js";
 import { validateBackfillParams } from "./lib/backfill_params.js";
 import { validateIngestSerpParams } from "./lib/ingest_serp_params.js";
+import {
+  ingestedLeadsTableName,
+  validateIngestCsvParams,
+} from "./lib/ingest_csv_params.js";
 
 const SAMPLE_MAX = 10;
 
@@ -71,13 +75,14 @@ export interface Services {
     client_tag: string;
     filter?: Partial<LeadFilter>;
     n?: number;
-    table?: "contacts" | "companies";
+    table?: "contacts" | "companies" | "ingested_leads";
   }): Promise<{ rows: Record<string, unknown>[]; n: number; capped_at: number }>;
 
   export(input: {
     client_tag: string;
     filter?: Partial<LeadFilter>;
     format?: "csv" | "jsonl";
+    table?: "contacts" | "ingested_leads";
   }): Promise<{ signed_url: string; row_count: number; export_id: string; expires_at: string }>;
 }
 
@@ -116,6 +121,21 @@ export function createServices(db: Db, config: Config): Services {
       } else if (goal.includes("backfill")) {
         recommended = "backfill";
         notes.push("Basco: {source:'basco'}. Peterson gc: {source:'gc'}.");
+      } else if (
+        goal.includes("csv") ||
+        goal.includes("xlsx") ||
+        goal.includes("spreadsheet") ||
+        goal.includes("ingest_csv") ||
+        (goal.includes("ingest") &&
+          (goal.includes("url") ||
+            goal.includes("getleads") ||
+            goal.includes("file") ||
+            goal.includes("export")))
+      ) {
+        recommended = "ingest_csv";
+        notes.push(
+          "Params: urls[] + source_label. Optional column_map, dedupe_key, exclude_* filters.",
+        );
       } else if (
         goal.includes("ingest") ||
         goal.includes("apify") ||
@@ -247,7 +267,7 @@ export function createServices(db: Db, config: Config): Services {
       });
       const freePathNotes = [
         "Counts only. LeadPipe does not look up or enrich people.",
-        "To load SERP/Apify people: lp_run(ingest_serp). To load rooftops: lp_run(backfill).",
+        "To load SERP/Apify people: lp_run(ingest_serp). CSV/XLSX URLs: lp_run(ingest_csv). Rooftops: lp_run(backfill).",
       ];
       if (!error && data) {
         return {
@@ -257,6 +277,7 @@ export function createServices(db: Db, config: Config): Services {
             with_email: number;
             dm_grade: number;
             suppressed: number;
+            ingested_leads?: number;
             by_source_tier: Record<string, number>;
             gaps: Record<string, number>;
           }),
@@ -317,6 +338,19 @@ export function createServices(db: Db, config: Config): Services {
         ...input.filter,
       };
 
+      if (table === "ingested_leads") {
+        const tname = ingestedLeadsTableName(input.client_tag);
+        const { data, error } = await db
+          .from(tname)
+          .select(
+            "first_name, last_name, email, title, company_name, company_domain, state, industry, employee_range, source_label, ingested_at",
+          )
+          .order("ingested_at", { ascending: false })
+          .limit(n);
+        if (error) throw new Error(error.message);
+        return { rows: data ?? [], n: (data ?? []).length, capped_at: SAMPLE_MAX };
+      }
+
       if (table === "companies") {
         let q = db.from("companies").select(
           "id, domain, company_name, source, segment, in_icp, employee_count, city, state",
@@ -342,19 +376,37 @@ export function createServices(db: Db, config: Config): Services {
         client_tag: input.client_tag,
         ...input.filter,
       };
+      const exportTable = input.table ?? "contacts";
 
-      // Stream contacts in pages into a string — never return content to MCP caller
+      // Stream rows in pages into a string — never return content to MCP caller
       const rows: Record<string, unknown>[] = [];
       let from = 0;
       const page = 1000;
       for (;;) {
-        let q = db
-          .from("contacts")
-          .select(
-            "domain, first_name, last_name, job_title, email, email_status, phone, linkedin_url, source_tier, source_tool, is_dm, suppressed",
-          );
-        q = applyContactFilter(q, filter);
-        const { data, error } = await q.range(from, from + page - 1);
+        let data: Record<string, unknown>[] | null = null;
+        let error: { message: string } | null = null;
+        if (exportTable === "ingested_leads") {
+          const tname = ingestedLeadsTableName(input.client_tag);
+          const res = await db
+            .from(tname)
+            .select(
+              "first_name, last_name, email, title, company_name, company_domain, state, industry, employee_range, source_label, source_url_hash, ingested_at",
+            )
+            .order("ingested_at", { ascending: false })
+            .range(from, from + page - 1);
+          data = (res.data as Record<string, unknown>[] | null) ?? null;
+          error = res.error;
+        } else {
+          let q = db
+            .from("contacts")
+            .select(
+              "domain, first_name, last_name, job_title, email, email_status, phone, linkedin_url, source_tier, source_tool, is_dm, suppressed",
+            );
+          q = applyContactFilter(q, filter);
+          const res = await q.range(from, from + page - 1);
+          data = (res.data as Record<string, unknown>[] | null) ?? null;
+          error = res.error;
+        }
         if (error) throw new Error(error.message);
         if (!data?.length) break;
         rows.push(...data);
@@ -463,6 +515,17 @@ function sanitizeParams(
     out.require_company_match = v.params.require_company_match !== false;
     delete out.run_ids;
     delete out.dataset_ids;
+  }
+  if (kind === "ingest_csv") {
+    const v = validateIngestCsvParams(out);
+    if (!v.ok) throw new Error(v.error);
+    out.urls = v.params.urls;
+    out.source_label = v.params.source_label;
+    out.dedupe_key = v.params.dedupe_key;
+    out.exclude_name_patterns = v.params.exclude_name_patterns;
+    out.exclude_domain_list = v.params.exclude_domain_list;
+    if (v.params.column_map) out.column_map = v.params.column_map;
+    else delete out.column_map;
   }
   return out;
 }

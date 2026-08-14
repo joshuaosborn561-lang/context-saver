@@ -175,7 +175,7 @@ function toolDefinitions() {
           goal: {
             type: "string",
             description:
-              "e.g. 'backfill basco', 'ingest serp', 'import smartlead'.",
+              "e.g. 'backfill basco', 'ingest serp', 'ingest csv', 'import smartlead'.",
           },
           filters: {
             type: "object",
@@ -189,9 +189,10 @@ function toolDefinitions() {
       name: "lp_run",
       description:
         "Queue a pass-through job. Returns job_id + status. No enrichment. " +
-        "Kinds: backfill | ingest_serp | import_smartlead | sync_smartlead | build_suppression. " +
+        "Kinds: backfill | ingest_serp | ingest_csv | import_smartlead | sync_smartlead | build_suppression. " +
         "backfill: source ('gc'|'basco'|'peterson'|…). " +
         "ingest_serp: {storage_paths|apify_run_ids, target_titles, persona}. " +
+        "ingest_csv: {urls[], source_label, column_map?, dedupe_key?, exclude_name_patterns?, exclude_domain_list?}. " +
         "Zero source rows → failed.",
       inputSchema: {
         type: "object",
@@ -220,7 +221,7 @@ function toolDefinitions() {
     {
       name: "lp_inventory",
       description:
-        "Client inventory counts only: companies, contacts, with_email, dm_grade, by_source_tier, gaps.",
+        "Client inventory counts only: companies, contacts, with_email, dm_grade, ingested_leads, by_source_tier (includes ingested), gaps.",
       inputSchema: {
         type: "object",
         properties: {
@@ -240,7 +241,10 @@ function toolDefinitions() {
           client_tag: { type: "string" },
           filter: { type: "object" },
           n: { type: "number" },
-          table: { type: "string", enum: ["contacts", "companies"] },
+          table: {
+            type: "string",
+            enum: ["contacts", "companies", "ingested_leads"],
+          },
         },
         required: ["client_tag"],
       },
@@ -248,13 +252,18 @@ function toolDefinitions() {
     {
       name: "lp_export",
       description:
-        "Export filtered contacts to storage. Returns signed_url + row_count — never content.",
+        "Export filtered contacts or ingested_leads to storage. Returns signed_url + row_count — never content.",
       inputSchema: {
         type: "object",
         properties: {
           client_tag: { type: "string" },
           filter: { type: "object" },
           format: { type: "string", enum: ["csv", "jsonl"] },
+          table: {
+            type: "string",
+            enum: ["contacts", "ingested_leads"],
+            description: "Default contacts. Use ingested_leads after ingest_csv.",
+          },
         },
         required: ["client_tag"],
       },
@@ -305,6 +314,7 @@ async function dispatch(
         client_tag: String(args.client_tag ?? ""),
         filter: args.filter as never,
         format: args.format as never,
+        table: args.table as never,
       });
     default:
       throw Object.assign(new Error(`Unknown tool: ${name}`), {

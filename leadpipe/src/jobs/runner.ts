@@ -14,6 +14,7 @@ import { runImportSmartlead } from "./kinds/import_smartlead.js";
 import { runBuildSuppression } from "./kinds/build_suppression.js";
 import { runBackfill } from "./kinds/backfill.js";
 import { runIngestSerp } from "./kinds/ingest_serp.js";
+import { runIngestCsv } from "./kinds/ingest_csv.js";
 
 export interface JobContext {
   db: Db;
@@ -40,6 +41,7 @@ const HANDLERS: Record<JobKind, JobHandler> = {
   build_suppression: runBuildSuppression,
   backfill: runBackfill,
   ingest_serp: runIngestSerp,
+  ingest_csv: runIngestCsv,
 };
 
 export function getHandler(kind: string): JobHandler {
