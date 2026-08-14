@@ -14,6 +14,10 @@ import {
 import { validateIngestSerpParams } from "../src/lib/ingest_serp_params.js";
 import { validateIngestCsvParams } from "../src/lib/ingest_csv_params.js";
 import {
+  assertClientTag,
+  normalizeClientTag,
+} from "../src/lib/client_tag.js";
+import {
   mapRawRow,
   resolveColumnMap,
   rowPassesFilters,
@@ -84,6 +88,11 @@ describe("backfill param validation", () => {
     const v = validateBackfillParams({ source: "basco", icp_only: true });
     assert.equal(v.ok, true);
     if (v.ok) assert.deepEqual(v.tasks, ["client_leads:client_basco"]);
+  });
+  it("accepts arbitrary client tag as source", () => {
+    const v = validateBackfillParams({ source: "acme_roofing" });
+    assert.equal(v.ok, true);
+    if (v.ok) assert.deepEqual(v.tasks, ["client_leads:client_acme_roofing"]);
   });
   it("rejects empty params", () => {
     const v = validateBackfillParams({});
@@ -230,6 +239,17 @@ describe("smartlead import assertions", () => {
 
   it("chunks leads for resumable batches", () => {
     assert.equal(chunkLeads(Array(251).fill(0), 100).length, 3);
+  });
+});
+
+describe("client_tag", () => {
+  it("normalizes and accepts new tags", () => {
+    assert.equal(normalizeClientTag("Acme Roofing"), "acme_roofing");
+    assert.equal(assertClientTag("acme_roofing"), "acme_roofing");
+  });
+  it("rejects reserved tags", () => {
+    assert.throws(() => assertClientTag("lp"), /reserved/);
+    assert.throws(() => assertClientTag("public"), /reserved/);
   });
 });
 

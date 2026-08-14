@@ -14,6 +14,8 @@ import {
   ingestedLeadsTableName,
   validateIngestCsvParams,
 } from "./lib/ingest_csv_params.js";
+import { assertClientTag } from "./lib/client_tag.js";
+import { createClient } from "@supabase/supabase-js";
 
 const SAMPLE_MAX = 10;
 
@@ -41,6 +43,7 @@ export interface Services {
     estimated_cost_usd: number;
     attached_existing?: boolean;
     error?: string;
+    client_ensured?: Record<string, unknown>;
   }>;
 
   status(jobId: string): Promise<{
@@ -84,13 +87,54 @@ export interface Services {
     format?: "csv" | "jsonl";
     table?: "contacts" | "ingested_leads";
   }): Promise<{ signed_url: string; row_count: number; export_id: string; expires_at: string }>;
+
+  /** Provision client_<tag> schema + registry row. Idempotent. */
+  ensureClient(input: {
+    client_tag: string;
+    display_name?: string;
+  }): Promise<Record<string, unknown>>;
+
+  /** List registered clients (tags only — no lead payloads). */
+  listClients(): Promise<{ clients: Array<Record<string, unknown>>; n: number }>;
 }
 
 export function createServices(db: Db, config: Config): Services {
+  const publicDb = () =>
+    createClient(config.supabaseUrl, config.supabaseServiceKey, {
+      auth: { persistSession: false },
+    });
+
   return {
+    async ensureClient(input) {
+      const tag = assertClientTag(input.client_tag);
+      return ensureClientRpc(config, tag, input.display_name);
+    },
+
+    async listClients() {
+      const { data, error } = await publicDb().rpc("lp_list_clients");
+      if (error) {
+        // Fallback: distinct tags from lp.companies / contacts
+        const tags = new Set<string>();
+        for (const table of ["companies", "contacts"] as const) {
+          const { data: rows } = await db.from(table).select("client_tag");
+          for (const r of rows ?? []) {
+            if (r?.client_tag) tags.add(String(r.client_tag));
+          }
+        }
+        const clients = [...tags].sort().map((client_tag) => ({ client_tag }));
+        return { clients, n: clients.length };
+      }
+      const clients = Array.isArray(data) ? data : [];
+      return {
+        clients: clients as Array<Record<string, unknown>>,
+        n: clients.length,
+      };
+    },
+
     async plan(input) {
+      const client_tag = assertClientTag(input.client_tag);
       const filters: LeadFilter = {
-        client_tag: input.client_tag,
+        client_tag,
         ...input.filters,
       };
       const goal = input.goal.toLowerCase();
@@ -98,11 +142,21 @@ export function createServices(db: Db, config: Config): Services {
         "LeadPipe is a pass-through: jobs move data server-side so chat never carries payloads.",
         "No enrichment strategy. No paid vendor lookups.",
         `Job kinds: ${JOB_KINDS.join(", ")}.`,
+        "New client? lp_ensure_client({ client_tag }) — also auto-runs on lp_run.",
       ];
       let recommended: JobKind | null = null;
       let candidate_count = 0;
 
       if (
+        goal.includes("new client") ||
+        goal.includes("ensure client") ||
+        goal.includes("add client") ||
+        goal.includes("create client")
+      ) {
+        notes.push(
+          "Use lp_ensure_client — not a job. Creates client_<tag> schema (leads/companies/contacts).",
+        );
+      } else if (
         goal.includes("requeue") ||
         goal.includes("import_smartlead") ||
         (goal.includes("import") && goal.includes("smartlead")) ||
@@ -120,7 +174,9 @@ export function createServices(db: Db, config: Config): Services {
         recommended = "sync_smartlead";
       } else if (goal.includes("backfill")) {
         recommended = "backfill";
-        notes.push("Basco: {source:'basco'}. Peterson gc: {source:'gc'}.");
+        notes.push(
+          "source: client tag (e.g. 'basco') → client_<tag>.leads, or 'gc' / 'permit_parcel.operators'.",
+        );
       } else if (
         goal.includes("csv") ||
         goal.includes("xlsx") ||
@@ -164,12 +220,16 @@ export function createServices(db: Db, config: Config): Services {
         throw new Error(`Unknown job_kind: ${input.job_kind}`);
       }
 
+      const client_tag = assertClientTag(input.client_tag);
+      // Auto-provision client schema so new tags work without a manual step.
+      const client_ensured = await ensureClientRpc(config, client_tag);
+
       const params = sanitizeParams(input.job_kind, input.params ?? {});
-      const params_hash = hashParams({ ...params, client_tag: input.client_tag });
+      const params_hash = hashParams({ ...params, client_tag });
 
       const existing = await findIdempotentJob(
         db,
-        input.client_tag,
+        client_tag,
         input.job_kind,
         params_hash,
       );
@@ -179,6 +239,7 @@ export function createServices(db: Db, config: Config): Services {
           status: existing.status,
           estimated_cost_usd: Number(existing.cost_estimate_usd ?? 0),
           attached_existing: true,
+          client_ensured,
         };
       }
 
@@ -186,7 +247,7 @@ export function createServices(db: Db, config: Config): Services {
         db,
         config,
         input.job_kind,
-        input.client_tag,
+        client_tag,
         params,
       );
 
@@ -200,7 +261,7 @@ export function createServices(db: Db, config: Config): Services {
       }
 
       const job = await insertJob(db, {
-        client_tag: input.client_tag,
+        client_tag,
         kind: input.job_kind,
         params,
         params_hash,
@@ -213,6 +274,7 @@ export function createServices(db: Db, config: Config): Services {
         job_id: job.id,
         status: job.status,
         estimated_cost_usd: estimate.estimated_cost_usd,
+        client_ensured,
         ...(estimate.estimated_cost_usd > ceiling
           ? {
               error:
@@ -257,17 +319,15 @@ export function createServices(db: Db, config: Config): Services {
     },
 
     async inventory(clientTag, _scope) {
+      const tag = assertClientTag(clientTag);
       // Prefer SQL aggregate — never pull contact rows into the worker for counts
-      const { createClient } = await import("@supabase/supabase-js");
-      const publicDb = createClient(config.supabaseUrl, config.supabaseServiceKey, {
-        auth: { persistSession: false },
-      });
-      const { data, error } = await publicDb.rpc("lp_inventory_for", {
-        p_client_tag: clientTag,
+      const { data, error } = await publicDb().rpc("lp_inventory_for", {
+        p_client_tag: tag,
       });
       const freePathNotes = [
         "Counts only. LeadPipe does not look up or enrich people.",
         "To load SERP/Apify people: lp_run(ingest_serp). CSV/XLSX URLs: lp_run(ingest_csv). Rooftops: lp_run(backfill).",
+        "New client: lp_ensure_client({ client_tag }) — also auto on lp_run.",
       ];
       if (!error && data) {
         return {
@@ -286,31 +346,31 @@ export function createServices(db: Db, config: Config): Services {
       }
 
       // Fallback count queries if RPC missing
-      const companies = await countCompanies(db, { client_tag: clientTag });
-      const contacts = await countContacts(db, { client_tag: clientTag });
+      const companies = await countCompanies(db, { client_tag: tag });
+      const contacts = await countContacts(db, { client_tag: tag });
       const with_email = await countContacts(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         has_email: true,
       });
       const dm_grade = await countContacts(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         is_dm: true,
       });
       const suppressed = await countContacts(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         suppressed: true,
       });
       const missing_email = await countContacts(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         missing_email: true,
       });
       const dm_missing_email = await countContacts(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         is_dm: true,
         missing_email: true,
       });
       const unresolved = await countCompanies(db, {
-        client_tag: clientTag,
+        client_tag: tag,
         unresolved_domain: true,
       });
 
@@ -331,15 +391,16 @@ export function createServices(db: Db, config: Config): Services {
     },
 
     async sample(input) {
+      const client_tag = assertClientTag(input.client_tag);
       const n = Math.min(Math.max(input.n ?? 5, 1), SAMPLE_MAX);
       const table = input.table ?? "contacts";
       const filter: LeadFilter = {
-        client_tag: input.client_tag,
+        client_tag,
         ...input.filter,
       };
 
       if (table === "ingested_leads") {
-        const tname = ingestedLeadsTableName(input.client_tag);
+        const tname = ingestedLeadsTableName(client_tag);
         const { data, error } = await db
           .from(tname)
           .select(
@@ -371,9 +432,10 @@ export function createServices(db: Db, config: Config): Services {
     },
 
     async export(input) {
+      const client_tag = assertClientTag(input.client_tag);
       const format = input.format ?? "csv";
       const filter: LeadFilter = {
-        client_tag: input.client_tag,
+        client_tag,
         ...input.filter,
       };
       const exportTable = input.table ?? "contacts";
@@ -386,7 +448,7 @@ export function createServices(db: Db, config: Config): Services {
         let data: Record<string, unknown>[] | null = null;
         let error: { message: string } | null = null;
         if (exportTable === "ingested_leads") {
-          const tname = ingestedLeadsTableName(input.client_tag);
+          const tname = ingestedLeadsTableName(client_tag);
           const res = await db
             .from(tname)
             .select(
@@ -420,7 +482,7 @@ export function createServices(db: Db, config: Config): Services {
           : toCsv(rows);
 
       const exportId = crypto.randomUUID();
-      const path = `${input.client_tag}/${exportId}.${format === "jsonl" ? "jsonl" : "csv"}`;
+      const path = `${client_tag}/${exportId}.${format === "jsonl" ? "jsonl" : "csv"}`;
       const expiresAt = new Date(
         Date.now() + config.exportTtlSeconds * 1000,
       ).toISOString();
@@ -439,7 +501,7 @@ export function createServices(db: Db, config: Config): Services {
         // Fallback: store path reference even if storage upload fails in local/dev
         await db.from("exports").insert({
           id: exportId,
-          client_tag: input.client_tag,
+          client_tag,
           filter,
           format,
           row_count: rows.length,
@@ -461,7 +523,7 @@ export function createServices(db: Db, config: Config): Services {
 
       await db.from("exports").insert({
         id: exportId,
-        client_tag: input.client_tag,
+        client_tag,
         filter,
         format,
         row_count: rows.length,
@@ -477,6 +539,26 @@ export function createServices(db: Db, config: Config): Services {
       };
     },
   };
+}
+
+async function ensureClientRpc(
+  config: Config,
+  clientTag: string,
+  displayName?: string,
+): Promise<Record<string, unknown>> {
+  const db = createClient(config.supabaseUrl, config.supabaseServiceKey, {
+    auth: { persistSession: false },
+  });
+  const { data, error } = await db.rpc("lp_ensure_client", {
+    p_client_tag: clientTag,
+    p_display_name: displayName ?? null,
+  });
+  if (error) {
+    throw new Error(
+      `lp_ensure_client failed: ${error.message}. Apply migration ensure_client.`,
+    );
+  }
+  return (data as Record<string, unknown>) ?? { client_tag: clientTag, ok: true };
 }
 
 async function countContacts(db: Db, filter: LeadFilter): Promise<number> {

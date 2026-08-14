@@ -44,6 +44,8 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
             "lp_inventory",
             "lp_sample",
             "lp_export",
+            "lp_ensure_client",
+            "lp_list_clients",
           ],
           ts: new Date().toISOString(),
         });
@@ -86,6 +88,8 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
               "lp_inventory",
               "lp_sample",
               "lp_export",
+              "lp_ensure_client",
+              "lp_list_clients",
             ],
           });
           return;
@@ -132,6 +136,24 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
           goal: String(body.goal ?? ""),
           filters: body.filters as never,
         });
+        json(res, 200, result);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/ensure_client") {
+        const body = await readJson(req);
+        const result = await services.ensureClient({
+          client_tag: String(body.client_tag ?? ""),
+          display_name: body.display_name
+            ? String(body.display_name)
+            : undefined,
+        });
+        json(res, 200, result);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/clients") {
+        const result = await services.listClients();
         json(res, 200, result);
         return;
       }

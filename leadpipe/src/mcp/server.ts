@@ -268,6 +268,36 @@ function toolDefinitions() {
         required: ["client_tag"],
       },
     },
+    {
+      name: "lp_ensure_client",
+      description:
+        "Provision a new client_tag: creates client_<tag> schema (leads/companies/contacts), " +
+        "registers in lp.clients, exposes schema to PostgREST, ensures ingested_leads table. " +
+        "Idempotent. Also auto-runs on every lp_run. Counts/metadata only — never lead rows.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          client_tag: {
+            type: "string",
+            description: "snake_case tag, e.g. acme_roofing",
+          },
+          display_name: {
+            type: "string",
+            description: "Optional human label",
+          },
+        },
+        required: ["client_tag"],
+      },
+    },
+    {
+      name: "lp_list_clients",
+      description:
+        "List registered client_tags (tag, schema_name, display_name). No lead payloads.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
   ];
 }
 
@@ -316,6 +346,15 @@ async function dispatch(
         format: args.format as never,
         table: args.table as never,
       });
+    case "lp_ensure_client":
+      return services.ensureClient({
+        client_tag: String(args.client_tag ?? ""),
+        display_name: args.display_name
+          ? String(args.display_name)
+          : undefined,
+      });
+    case "lp_list_clients":
+      return services.listClients();
     default:
       throw Object.assign(new Error(`Unknown tool: ${name}`), {
         code: "unknown_tool",

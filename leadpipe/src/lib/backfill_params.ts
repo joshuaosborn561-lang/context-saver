@@ -61,8 +61,8 @@ export function validateBackfillParams(params: Record<string, unknown>): {
         ok: false,
         error:
           `backfill could not resolve any source tasks from params ${JSON.stringify(params)}. ` +
-          `Pass source: "gc" | "basco" | "peterson" | "client_basco.leads" | ` +
-          `"permit_parcel.operators" | "peterson_leads", or source_schema + source_table(s).`,
+          `Pass source: "gc" | "<client_tag>" | "client_<tag>.leads" | ` +
+          `"permit_parcel.operators", or source_schema + source_table(s).`,
       };
     }
     return { ok: true, normalized: p, tasks };
@@ -119,6 +119,10 @@ export function resolveTasks(p: BackfillParams): string[] {
         throw new Error(`Invalid client schema in source: ${s}`);
       }
       return [clientLeadsTask(schema)];
+    }
+    // Any other snake_case tag → client_<tag>.leads (new clients via lp_ensure_client)
+    if (/^[a-z][a-z0-9_]{0,46}$/.test(s) && !s.includes(".")) {
+      return [clientLeadsTask(`client_${s}`)];
     }
   }
 

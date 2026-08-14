@@ -6,11 +6,18 @@
 
 | Need | Tool |
 |------|------|
+| List / add clients | `lp_list_clients` / `lp_ensure_client` |
 | Counts | `lp_inventory` |
 | Start a job | `lp_run` → `job_id` |
 | Progress | `lp_status` |
 | Eyeball ≤10 rows | `lp_sample` |
 | Download for humans | `lp_export` |
+
+## Clients
+
+Any new `client_tag` (snake_case) is allowed. Call `lp_ensure_client({ client_tag })` to create `client_<tag>` (leads/companies/contacts) and register it. **`lp_run` also auto-ensures** the tag, so Claude can start jobs for a brand-new client without a separate step.
+
+Use `lp_list_clients` to see what's registered. Do not invent a fixed client list.
 
 ## Job kinds (all $0)
 

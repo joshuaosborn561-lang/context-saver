@@ -17,11 +17,15 @@ Claude (chat) ──job requests──▶ LeadPipe worker (Railway)
 | Tool | Returns |
 |------|---------|
 | `lp_plan` | Map a goal to a pass-through job kind ($0) |
-| `lp_run` | `{ job_id, status }` |
+| `lp_run` | `{ job_id, status }` (auto-ensures client) |
 | `lp_status` | progress + `useful_output_count` |
 | `lp_inventory` | counts only |
 | `lp_sample` | ≤10 rows |
 | `lp_export` | `{ signed_url, row_count }` |
+| `lp_ensure_client` | provision `client_<tag>` schema (idempotent) |
+| `lp_list_clients` | registered tags |
+
+New clients: any snake_case `client_tag`. `lp_ensure_client` or just `lp_run` — schema is created automatically.
 
 ## Job kinds
 

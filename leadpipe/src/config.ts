@@ -24,6 +24,7 @@ export const CLIENT_TAGS = [
   "bcp",
 ] as const;
 
+/** Any snake_case tag is valid; CLIENT_TAGS are examples only. Use lp_ensure_client. */
 export type ClientTag = (typeof CLIENT_TAGS)[number] | string;
 
 export interface Config {
