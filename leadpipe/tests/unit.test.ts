@@ -301,6 +301,52 @@ describe("csv header dialects", () => {
       assert.equal(r.map.email, "Email");
       assert.equal(r.map.company_domain, "Company Domain");
       assert.equal(r.map.title, "Current Job Title");
+      // Bare getleads slice without geo/firmographics → surface unresolved
+      assert.deepEqual(r.unresolved_optional, [
+        "state",
+        "industry",
+        "employee_range",
+      ]);
+    }
+  });
+
+  it("maps getleads firmographic + geo headers (not bare Industry/State)", () => {
+    // Real getleads export headers (from lp.raw_payloads on Parlay ingest)
+    const r = resolveColumnMap([
+      "First Name",
+      "Last Name",
+      "Email",
+      "Current Job Title",
+      "Company Name",
+      "Company Domain",
+      "Contact State",
+      "Work State",
+      "Company Industry (LinkedIn)",
+      "Employee Count Range",
+      "Email Verification Status",
+    ]);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.dialect, "getleads");
+      assert.equal(r.map.state, "Contact State");
+      assert.equal(r.map.industry, "Company Industry (LinkedIn)");
+      assert.equal(r.map.employee_range, "Employee Count Range");
+      assert.deepEqual(r.unresolved_optional, []);
+
+      const row = mapRawRow(
+        {
+          Email: "a@acme.com",
+          "Company Domain": "acme.com",
+          "Contact State": "TX",
+          "Work State": "CA",
+          "Company Industry (LinkedIn)": "Computer Software",
+          "Employee Count Range": "51-200",
+        },
+        r.map,
+      );
+      assert.equal(row.state, "TX");
+      assert.equal(row.industry, "Computer Software");
+      assert.equal(row.employee_range, "51-200");
     }
   });
 

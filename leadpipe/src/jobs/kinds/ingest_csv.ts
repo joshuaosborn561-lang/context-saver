@@ -31,6 +31,8 @@ type FileSummary = {
   content_hash?: string;
   format?: string;
   dialect?: string;
+  /** Optional geo/firmographic fields that did not resolve from headers. */
+  unresolved_optional?: Array<"state" | "industry" | "employee_range">;
   rows_read: number;
   rows_inserted: number;
   dupes_dropped: number;
@@ -222,6 +224,7 @@ export const runIngestCsv: JobHandler = {
         format: parsed.format,
         dialect: resolved.dialect,
         headers: resolved.headers.slice(0, 40),
+        unresolved_optional: resolved.unresolved_optional,
         rows_read: parsed.rows.length,
         rows_inserted,
         dupes_dropped,
@@ -240,6 +243,7 @@ export const runIngestCsv: JobHandler = {
         content_hash: downloaded.content_hash,
         format: parsed.format,
         dialect: resolved.dialect,
+        unresolved_optional: resolved.unresolved_optional,
         rows_read: parsed.rows.length,
         rows_inserted,
         dupes_dropped,
@@ -264,6 +268,7 @@ export const runIngestCsv: JobHandler = {
     let filtered_out = 0;
     let files_ok = 0;
     let files_failed = 0;
+    const unresolvedSeen = new Set<"state" | "industry" | "employee_range">();
 
     for (const r of rows ?? []) {
       const s = (r.result_summary ?? {}) as FileSummary;
@@ -275,12 +280,14 @@ export const runIngestCsv: JobHandler = {
         content_hash: s.content_hash,
         format: s.format,
         dialect: s.dialect,
+        unresolved_optional: s.unresolved_optional,
         rows_read: Number(s.rows_read ?? 0),
         rows_inserted: Number(s.rows_inserted ?? 0),
         dupes_dropped: Number(s.dupes_dropped ?? 0),
         filtered_out: Number(s.filtered_out ?? 0),
         truncated: s.truncated,
       });
+      for (const f of s.unresolved_optional ?? []) unresolvedSeen.add(f);
       rows_read += Number(s.rows_read ?? 0);
       rows_inserted += Number(s.rows_inserted ?? 0);
       dupes_dropped += Number(s.dupes_dropped ?? 0);
@@ -297,6 +304,8 @@ export const runIngestCsv: JobHandler = {
       params.source_label,
     );
 
+    const unresolved_optional = [...unresolvedSeen];
+
     return {
       useful_output_count: rows_inserted,
       files_processed: (rows ?? []).length,
@@ -310,8 +319,12 @@ export const runIngestCsv: JobHandler = {
       contacts_with_valid_email: stats.contacts_with_valid_email,
       table,
       source_label: params.source_label,
+      unresolved_optional,
       per_file,
-      note: "Pass-through CSV/XLSX ingest — counts only; use lp_sample(table=ingested_leads).",
+      note:
+        unresolved_optional.length > 0
+          ? `Pass-through CSV/XLSX ingest — counts only. WARNING: optional fields not mapped from headers: ${unresolved_optional.join(", ")}. Pass column_map or fix aliases.`
+          : "Pass-through CSV/XLSX ingest — counts only; use lp_sample(table=ingested_leads).",
     };
   },
 };

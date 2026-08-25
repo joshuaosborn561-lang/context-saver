@@ -15,6 +15,8 @@ export type ColumnResolution =
       map: Record<CanonicalField, string | null>;
       dialect: string;
       headers: string[];
+      /** Optional firmographic/geo fields that did not map (for job warnings). */
+      unresolved_optional: Array<"state" | "industry" | "employee_range">;
     }
   | {
       ok: false;
@@ -84,17 +86,44 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "primary_domain",
     "primary domain",
   ],
-  state: ["state", "region", "province", "st"],
-  industry: ["industry", "sector", "vertical"],
+  state: [
+    // Prefer contact/work geography (getleads) over bare "state"
+    "contact state",
+    "work state",
+    "company state",
+    "hq state",
+    "person state",
+    "location state",
+    "state",
+    "region",
+    "province",
+    "st",
+  ],
+  industry: [
+    // getleads exports "Company Industry (LinkedIn)" — not bare "Industry"
+    "company industry (linkedin)",
+    "company industry",
+    "linkedin industry",
+    "industry (linkedin)",
+    "industry",
+    "sector",
+    "vertical",
+    "company sector",
+  ],
   employee_range: [
+    // getleads exports "Employee Count Range" — not bare "Employee Count"
+    "employee count range",
+    "employees range",
     "employee_range",
     "employee range",
-    "employees",
     "employee_count",
     "employee count",
+    "employees",
     "company_size",
     "company size",
+    "company size range",
     "headcount",
+    "headcount range",
     "size",
   ],
 };
@@ -209,11 +238,19 @@ export function resolveColumnMap(
     };
   }
 
+  const dialect = detectDialect(headersList);
+  // Firmographics / geo are optional for ingest success, but missing mappings
+  // on known dialects are a recurring bug — surface them for the job summary.
+  const unresolved_optional = (
+    ["state", "industry", "employee_range"] as const
+  ).filter((f) => !map[f]);
+
   return {
     ok: true,
     map,
-    dialect: detectDialect(headersList),
+    dialect,
     headers: headersList,
+    unresolved_optional,
   };
 }
 
