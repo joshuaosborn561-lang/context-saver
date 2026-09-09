@@ -1,0 +1,19 @@
+---
+description: Prefer LeadPipe MCP for all lead/campaign data movement
+globs:
+alwaysApply: true
+---
+
+# LeadPipe context discipline
+
+Lead data must not enter the chat context. Use LeadPipe MCP (`lp_plan`, `lp_run`, `lp_status`, `lp_inventory`, `lp_sample`, `lp_export`).
+
+- No paging vendor APIs for contacts/companies in this conversation.
+- No pasting CSV / JSON lead lists into messages or tool args.
+- `lp_sample` max 10 rows; everything else is counts, job IDs, signed URLs.
+- Always pass `client_tag`. Cost-gate paid jobs with `approve_cost_usd`.
+- Smartlead restore/requeue → `import_smartlead` from storage, not chat imports.
+
+If LeadPipe tools are missing, tell the user to wire the MCP server — do not work around by loading rows into context.
+
+See `leadpipe/CLAUDE.md` for tool mapping and examples.

@@ -1,0 +1,34 @@
+{
+  "name": "leadpipe",
+  "version": "0.1.0",
+  "description": "Context-free lead pipeline — LLM orchestrates; data never enters chat",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "leadpipe": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "mcp": "tsx src/index.ts --mode mcp",
+    "worker": "tsx src/index.ts --mode worker",
+    "test": "tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@supabase/supabase-js": "^2.49.8",
+    "xlsx": "^0.18.5",
+    "zod": "^3.25.28"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "@types/xlsx": "^0.0.35",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
