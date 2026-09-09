@@ -193,6 +193,7 @@ function toolDefinitions() {
         "backfill: source ('gc'|'basco'|'peterson'|…). " +
         "ingest_serp: {storage_paths|apify_run_ids, target_titles, persona}. " +
         "ingest_csv: {urls[], source_label, column_map?, dedupe_key?, exclude_name_patterns?, exclude_domain_list?}. " +
+        "force=true bypasses idempotency and always enqueues a new job. " +
         "Zero source rows → failed.",
       inputSchema: {
         type: "object",
@@ -203,6 +204,12 @@ function toolDefinitions() {
           approve_cost_usd: {
             type: "number",
             description: "Unused for pass-through jobs (always $0). Optional.",
+          },
+          force: {
+            type: "boolean",
+            description:
+              "If true, skip idempotency attach and always create a new job_id " +
+              "(same params hash). Use to re-run ingest after recovery.",
           },
         },
         required: ["job_kind", "client_tag"],
@@ -252,17 +259,39 @@ function toolDefinitions() {
     {
       name: "lp_export",
       description:
-        "Export filtered contacts or ingested_leads to storage. Returns signed_url + row_count — never content.",
+        "Export filtered contacts or ingested_leads to storage. Returns signed_url + row_count — never content. " +
+        "Reads live columns from information_schema (via lp_table_columns). " +
+        "Optional columns[] to export a subset; optional where / filter_sql for equality filters " +
+        "(e.g. where:{ev_status:'sendable'} or filter_sql:\"ev_status = 'sendable'\").",
       inputSchema: {
         type: "object",
         properties: {
           client_tag: { type: "string" },
-          filter: { type: "object" },
+          filter: {
+            type: "object",
+            description: "LeadFilter for contacts table (domain, has_email, …).",
+          },
           format: { type: "string", enum: ["csv", "jsonl"] },
           table: {
             type: "string",
             enum: ["contacts", "ingested_leads"],
             description: "Default contacts. Use ingested_leads after ingest_csv.",
+          },
+          columns: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Exact columns to export. Omit to export every live column on the table.",
+          },
+          where: {
+            type: "object",
+            description:
+              "Equality predicates applied to the export query, e.g. {\"ev_status\":\"sendable\"}.",
+          },
+          filter_sql: {
+            type: "string",
+            description:
+              "Simple AND-chained equalities only, e.g. \"ev_status = 'sendable'\". Prefer where when possible.",
           },
         },
         required: ["client_tag"],
@@ -322,6 +351,7 @@ async function dispatch(
           args.approve_cost_usd !== undefined
             ? Number(args.approve_cost_usd)
             : undefined,
+        force: args.force === true,
       });
     case "lp_status":
       return services.status(String(args.job_id ?? ""));
@@ -345,6 +375,15 @@ async function dispatch(
         filter: args.filter as never,
         format: args.format as never,
         table: args.table as never,
+        columns: Array.isArray(args.columns)
+          ? (args.columns as unknown[]).map((c) => String(c))
+          : undefined,
+        where:
+          args.where && typeof args.where === "object" && !Array.isArray(args.where)
+            ? (args.where as Record<string, unknown>)
+            : undefined,
+        filter_sql:
+          args.filter_sql !== undefined ? String(args.filter_sql) : undefined,
       });
     case "lp_ensure_client":
       return services.ensureClient({

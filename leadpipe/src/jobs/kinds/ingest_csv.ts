@@ -32,7 +32,7 @@ type FileSummary = {
   format?: string;
   dialect?: string;
   /** Optional geo/firmographic fields that did not resolve from headers. */
-  unresolved_optional?: Array<"state" | "industry" | "employee_range">;
+  unresolved_optional?: Array<"city" | "state" | "industry" | "employee_range">;
   rows_read: number;
   rows_inserted: number;
   dupes_dropped: number;
@@ -195,6 +195,7 @@ export const runIngestCsv: JobHandler = {
         title: r.title,
         company_name: r.company_name,
         company_domain: r.company_domain,
+        city: r.city,
         state: r.state,
         industry: r.industry,
         employee_range: r.employee_range,
@@ -268,7 +269,7 @@ export const runIngestCsv: JobHandler = {
     let filtered_out = 0;
     let files_ok = 0;
     let files_failed = 0;
-    const unresolvedSeen = new Set<"state" | "industry" | "employee_range">();
+    const unresolvedSeen = new Set<"city" | "state" | "industry" | "employee_range">();
 
     for (const r of rows ?? []) {
       const s = (r.result_summary ?? {}) as FileSummary;
