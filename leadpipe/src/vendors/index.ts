@@ -6,6 +6,11 @@
  */
 
 import type { Config } from "../config.js";
+import { with429Retry } from "../lib/concurrency.js";
+import {
+  createVendorLimits,
+  type VendorLimits,
+} from "../lib/vendor_limits.js";
 
 export class VendorError extends Error {
   constructor(
@@ -23,28 +28,37 @@ async function jsonFetch<T>(
   url: string,
   init: RequestInit,
 ): Promise<T> {
-  const res = await fetch(url, init);
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = { raw: text.slice(0, 500) };
-  }
-  if (!res.ok) {
-    throw new VendorError(
-      vendor,
-      typeof body === "object" && body && "message" in body
-        ? String((body as { message: unknown }).message)
-        : `HTTP ${res.status}: ${text.slice(0, 200)}`,
-      res.status,
-    );
-  }
-  return body as T;
+  return with429Retry(async () => {
+    const res = await fetch(url, init);
+    const text = await res.text();
+    let body: unknown = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { raw: text.slice(0, 500) };
+    }
+    if (!res.ok) {
+      throw new VendorError(
+        vendor,
+        typeof body === "object" && body && "message" in body
+          ? String((body as { message: unknown }).message)
+          : `HTTP ${res.status}: ${text.slice(0, 200)}`,
+        res.status,
+      );
+    }
+    return body as T;
+  });
 }
 
 export function createVendors(config: Config) {
+  const limits: VendorLimits = createVendorLimits({
+    getleadsRps: config.getleadsRps,
+    apifyConcurrency: config.apifyConcurrency,
+    aiarkConcurrency: config.aiarkConcurrency,
+    fullenrichConcurrency: config.fullenrichConcurrency,
+  });
   return {
+    limits,
     async smartleadCampaignStats(campaignId: string): Promise<{
       leads: Array<Record<string, unknown>>;
       stripped_fields: string[];

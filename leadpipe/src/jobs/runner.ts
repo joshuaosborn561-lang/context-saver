@@ -2,13 +2,19 @@ import type { Config, JobKind } from "../config.js";
 import type { Db, JobRow } from "../db/client.js";
 import {
   fetchPendingJobRows,
-  markJobRow,
+  markJobRowsBulk,
   refreshJobCounters,
   storeRawPayload,
   updateJob,
   upsertJobRows,
 } from "../db/client.js";
+import {
+  ROW_CONCURRENCY_CAP,
+  ROW_CONCURRENCY_DEFAULT,
+  clampInt,
+} from "../lib/concurrency.js";
 import type { Vendors } from "../vendors/index.js";
+import { processJobBatch } from "./batch.js";
 import { runSyncSmartlead } from "./kinds/sync_smartlead.js";
 import { runImportSmartlead } from "./kinds/import_smartlead.js";
 import { runBuildSuppression } from "./kinds/build_suppression.js";
@@ -96,54 +102,41 @@ export async function executeJob(ctx: JobContext): Promise<void> {
   let useful = 0;
   let costActual = Number(ctx.job.cost_actual_usd ?? 0);
   const ceiling = Number(ctx.job.cost_ceiling_usd ?? ctx.config.defaultCostCeilingUsd);
+  const rowConcurrency = clampInt(
+    ctx.config.rowConcurrency,
+    ROW_CONCURRENCY_DEFAULT,
+    1,
+    ROW_CONCURRENCY_CAP,
+  );
 
   for (;;) {
     const batch = await fetchPendingJobRows(ctx.db, ctx.job.id, 25);
     if (batch.length === 0) break;
 
-    for (const row of batch) {
-      // Strict >: approve_cost_usd=0 must allow free work.
-      if (costActual > ceiling) {
-        await updateJob(ctx.db, ctx.job.id, {
-          status: "cost_blocked",
-          error: `Stopped: actual cost $${costActual.toFixed(4)} exceeded ceiling $${ceiling.toFixed(4)}`,
-          cost_actual_usd: costActual,
-          finished_at: new Date().toISOString(),
-        } as Partial<JobRow>);
-        return;
-      }
+    const processed = await processJobBatch(
+      batch,
+      (entityKey) => handler.processRow(ctx, entityKey),
+      { costActual, ceiling, rowConcurrency },
+    );
+    costActual = processed.costActual;
+    useful += processed.useful;
 
-      await markJobRow(ctx.db, row.id, {
-        status: "running",
-        attempts: row.attempts + 1,
-      });
-
-      try {
-        const result = await handler.processRow(ctx, row.entity_key);
-        costActual += result.cost_usd;
-        if (result.useful) useful += 1;
-
-        await markJobRow(ctx.db, row.id, {
-          status: "done",
-          cost_usd: result.cost_usd,
-          result_summary: result.summary ?? { useful: result.useful },
-          last_error: null,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        await markJobRow(ctx.db, row.id, {
-          status: "failed",
-          last_error: message.slice(0, 1000),
-        });
-      }
-
-      await updateJob(ctx.db, ctx.job.id, {
-        cost_actual_usd: costActual,
-        heartbeat_at: new Date().toISOString(),
-      } as Partial<JobRow>);
-    }
-
+    await markJobRowsBulk(ctx.db, processed.writes);
+    await updateJob(ctx.db, ctx.job.id, {
+      cost_actual_usd: costActual,
+      heartbeat_at: new Date().toISOString(),
+    } as Partial<JobRow>);
     await refreshJobCounters(ctx.db, ctx.job.id);
+
+    if (processed.blocked) {
+      await updateJob(ctx.db, ctx.job.id, {
+        status: "cost_blocked",
+        error: `Stopped: actual cost $${costActual.toFixed(4)} exceeded ceiling $${ceiling.toFixed(4)}`,
+        cost_actual_usd: costActual,
+        finished_at: new Date().toISOString(),
+      } as Partial<JobRow>);
+      return;
+    }
   }
 
   const summary = await handler.summarize({
@@ -185,6 +178,8 @@ export async function executeJob(ctx: JobContext): Promise<void> {
     heartbeat_at: new Date().toISOString(),
   } as Partial<JobRow>);
 }
+
+export { processJobBatch } from "./batch.js";
 
 export async function seedEntityKeys(
   db: Db,

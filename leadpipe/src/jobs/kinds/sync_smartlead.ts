@@ -1,5 +1,6 @@
 import type { JobHandler } from "../runner.js";
 import { seedEntityKeys, storeRawPayload } from "../runner.js";
+import { WRITE_CHUNK_SIZE, chunkItems, writeChunks } from "../../lib/concurrency.js";
 import { stripHtmlFields } from "../../vendors/index.js";
 
 /**
@@ -33,55 +34,35 @@ export const runSyncSmartlead: JobHandler = {
       },
     });
 
-    let upserted = 0;
+    const prepared = collectSmartleadContactWrites(leads, {
+      client_tag: ctx.job.client_tag,
+      campaign_id: campaignId,
+      job_id: ctx.job.id,
+    });
+
+    const upserted = await writeChunks(prepared.upserts, async (chunk) => {
+      const { error } = await ctx.db
+        .from("contacts")
+        .upsert(chunk, { onConflict: "client_tag,domain,email" });
+      return { error };
+    });
+
     let suppressed = 0;
-
-    for (const lead of leads) {
-      const email = extractEmail(lead);
-      if (!email) continue;
-      const domain = email.split("@")[1]?.toLowerCase() ?? null;
-      const status = String(
-        lead.status ?? lead.lead_status ?? lead.email_status ?? "synced",
-      ).toLowerCase();
-
-      const { error } = await ctx.db.from("contacts").upsert(
-        {
-          client_tag: ctx.job.client_tag,
-          domain,
-          email,
-          first_name: (lead.first_name as string) ?? null,
-          last_name: (lead.last_name as string) ?? null,
-          email_status: status,
-          source_tool: "smartlead",
-          source_tier: "smartlead",
-          metadata: {
-            campaign_id: campaignId,
-            smartlead_stats: sanitizeStats(lead),
-            from_job: ctx.job.id,
-          },
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "client_tag,domain,email" },
-      );
-      if (!error) {
-        upserted += 1;
-        if (["bounced", "unsubscribed", "complaint"].includes(status)) {
-          suppressed += 1;
-          await ctx.db
-            .from("contacts")
-            .update({ suppressed: true })
-            .eq("client_tag", ctx.job.client_tag)
-            .eq("email", email);
-        }
-      }
+    for (const emails of chunkItems(prepared.suppressEmails, WRITE_CHUNK_SIZE)) {
+      const { error } = await ctx.db
+        .from("contacts")
+        .update({ suppressed: true })
+        .eq("client_tag", ctx.job.client_tag)
+        .in("email", emails);
+      if (!error) suppressed += emails.length;
     }
 
     return {
-      useful: upserted > 0,
+      useful: upserted.written > 0,
       cost_usd: 0,
       summary: {
         leads_seen: leads.length,
-        contacts_upserted: upserted,
+        contacts_upserted: upserted.written,
         auto_suppressed: suppressed,
         html_fields_stripped: stripped_fields,
       },
@@ -111,6 +92,43 @@ export const runSyncSmartlead: JobHandler = {
     };
   },
 };
+
+export function collectSmartleadContactWrites(
+  leads: Record<string, unknown>[],
+  meta: { client_tag: string; campaign_id: string; job_id: string },
+): { upserts: Record<string, unknown>[]; suppressEmails: string[] } {
+  const upserts: Record<string, unknown>[] = [];
+  const suppressEmails: string[] = [];
+  const now = new Date().toISOString();
+  for (const lead of leads) {
+    const email = extractEmail(lead);
+    if (!email) continue;
+    const domain = email.split("@")[1]?.toLowerCase() ?? null;
+    const status = String(
+      lead.status ?? lead.lead_status ?? lead.email_status ?? "synced",
+    ).toLowerCase();
+    upserts.push({
+      client_tag: meta.client_tag,
+      domain,
+      email,
+      first_name: (lead.first_name as string) ?? null,
+      last_name: (lead.last_name as string) ?? null,
+      email_status: status,
+      source_tool: "smartlead",
+      source_tier: "smartlead",
+      metadata: {
+        campaign_id: meta.campaign_id,
+        smartlead_stats: sanitizeStats(lead),
+        from_job: meta.job_id,
+      },
+      updated_at: now,
+    });
+    if (["bounced", "unsubscribed", "complaint"].includes(status)) {
+      suppressEmails.push(email);
+    }
+  }
+  return { upserts, suppressEmails };
+}
 
 function extractEmail(lead: Record<string, unknown>): string | null {
   const candidates = [lead.email, lead.Email, lead.lead_email, lead.to_email];

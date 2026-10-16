@@ -7,6 +7,7 @@ import {
   validateBackfillParams,
   type BackfillParams,
 } from "../../lib/backfill_params.js";
+import { writeChunks } from "../../lib/concurrency.js";
 
 export { validateBackfillParams } from "../../lib/backfill_params.js";
 
@@ -261,10 +262,11 @@ async function backfillGcContacts(ctx: Ctx): Promise<CountResult> {
       inserted += chunk.length;
     }
 
-    for (const row of withoutEmail) {
-      const { error: insErr } = await ctx.db.from("contacts").insert(row);
-      if (!insErr) inserted += 1;
-    }
+    const noEmail = await writeChunks(withoutEmail, async (chunk) => {
+      const { error } = await ctx.db.from("contacts").insert(chunk);
+      return { error };
+    });
+    inserted += noEmail.written;
 
     if (data.length < page) break;
     from += page;

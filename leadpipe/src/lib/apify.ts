@@ -3,11 +3,25 @@
  * Used by ingest_serp (already-paid google-search-scraper runs).
  */
 
+import { getVendorLimits } from "./vendor_limits.js";
+
 export interface ApifyRunMeta {
   id: string;
   status: string;
   defaultDatasetId: string;
   actId?: string;
+}
+
+async function apifyFetch(url: string, timeoutMs: number): Promise<Response> {
+  return getVendorLimits().wrap("apify", async () => {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (res.status === 429) {
+      const err = new Error(`HTTP 429`) as Error & { status: number };
+      err.status = 429;
+      throw err;
+    }
+    return res;
+  });
 }
 
 export async function fetchActorRun(
@@ -16,7 +30,7 @@ export async function fetchActorRun(
   baseUrl = "https://api.apify.com",
 ): Promise<ApifyRunMeta> {
   const url = `${baseUrl.replace(/\/$/, "")}/v2/actor-runs/${encodeURIComponent(runId)}?token=${encodeURIComponent(token)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+  const res = await apifyFetch(url, 60_000);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(
@@ -53,7 +67,7 @@ export async function fetchDatasetItems(
       `${baseUrl}/v2/datasets/${encodeURIComponent(datasetId)}/items` +
       `?token=${encodeURIComponent(token)}` +
       `&clean=true&format=json&limit=${pageSize}&offset=${offset}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    const res = await apifyFetch(url, 120_000);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(

@@ -62,6 +62,7 @@ export interface JobProgressRow {
   last_error: string | null;
   result_summary: Record<string, unknown>;
   cost_usd: number;
+  created_at?: string;
 }
 
 export async function findIdempotentJob(
@@ -136,11 +137,27 @@ export async function updateJob(
   if (error) throw new Error(`updateJob: ${error.message}`);
 }
 
+export const CLAIM_QUEUED_JOBS_RPC = "claim_queued_jobs";
+
 export async function claimQueuedJobs(
   db: Db,
   limit = 1,
 ): Promise<JobRow[]> {
-  // Prefer interrupted/queued; revive stale heartbeats as interrupted
+  const n = Math.max(0, Math.min(4, Math.trunc(limit)));
+  if (n === 0) return [];
+
+  const { data, error } = await db.rpc(CLAIM_QUEUED_JOBS_RPC, { p_limit: n });
+  if (!error) {
+    return (Array.isArray(data) ? data : data ? [data] : []) as JobRow[];
+  }
+  if (!/could not find|PGRST202|404|does not exist/i.test(error.message)) {
+    throw new Error(`claimQueuedJobs: ${error.message}`);
+  }
+  return claimQueuedJobsCas(db, n);
+}
+
+/** Equivalent of SKIP LOCKED when the RPC is not deployed yet: CAS on status. */
+async function claimQueuedJobsCas(db: Db, limit: number): Promise<JobRow[]> {
   const staleBefore = new Date(Date.now() - 90_000).toISOString();
   await db
     .from("jobs")
@@ -154,9 +171,26 @@ export async function claimQueuedJobs(
     .in("status", ["queued", "interrupted"])
     .order("created_at", { ascending: true })
     .limit(limit);
-
   if (error) throw new Error(`claimQueuedJobs: ${error.message}`);
-  return (data ?? []) as JobRow[];
+
+  const claimed: JobRow[] = [];
+  for (const job of (data ?? []) as JobRow[]) {
+    const now = new Date().toISOString();
+    const { data: updated, error: upErr } = await db
+      .from("jobs")
+      .update({
+        status: "running",
+        started_at: job.started_at ?? now,
+        heartbeat_at: now,
+      })
+      .eq("id", job.id)
+      .in("status", ["queued", "interrupted"])
+      .select("*")
+      .maybeSingle();
+    if (upErr) throw new Error(`claimQueuedJobs: ${upErr.message}`);
+    if (updated) claimed.push(updated as JobRow);
+  }
+  return claimed;
 }
 
 export async function upsertJobRows(
@@ -207,6 +241,41 @@ export async function markJobRow(
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq("id", rowId);
   if (error) throw new Error(`markJobRow: ${error.message}`);
+}
+
+export interface JobRowWrite {
+  id: string;
+  job_id: string;
+  entity_key: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  result_summary: Record<string, unknown>;
+  cost_usd: number;
+  created_at?: string;
+}
+
+/** One upsert for a batch of row-status writes. */
+export async function markJobRowsBulk(
+  db: Db,
+  writes: JobRowWrite[],
+): Promise<void> {
+  if (writes.length === 0) return;
+  const now = new Date().toISOString();
+  const rows = writes.map((w) => ({
+    id: w.id,
+    job_id: w.job_id,
+    entity_key: w.entity_key,
+    status: w.status,
+    attempts: w.attempts,
+    last_error: w.last_error,
+    result_summary: w.result_summary,
+    cost_usd: w.cost_usd,
+    updated_at: now,
+    ...(w.created_at ? { created_at: w.created_at } : {}),
+  }));
+  const { error } = await db.from("job_rows").upsert(rows, { onConflict: "id" });
+  if (error) throw new Error(`markJobRowsBulk: ${error.message}`);
 }
 
 export async function storeRawPayload(
