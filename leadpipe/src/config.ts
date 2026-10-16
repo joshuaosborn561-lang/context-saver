@@ -4,6 +4,18 @@
  * No paid enrichment / DM lookup strategy.
  */
 
+import {
+  AIARK_CONCURRENCY_DEFAULT,
+  APIFY_CONCURRENCY_DEFAULT,
+  FULLENRICH_CONCURRENCY_DEFAULT,
+  GETLEADS_RPS_DEFAULT,
+  JOB_CONCURRENCY_CAP,
+  JOB_CONCURRENCY_DEFAULT,
+  ROW_CONCURRENCY_CAP,
+  ROW_CONCURRENCY_DEFAULT,
+  clampInt,
+} from "./lib/concurrency.js";
+
 export const JOB_KINDS = [
   "backfill",
   "ingest_serp",
@@ -35,6 +47,14 @@ export interface Config {
   defaultCostCeilingUsd: number;
   pollIntervalMs: number;
   heartbeatIntervalMs: number;
+  /** In-flight jobs on this worker. Default 2, cap 4. */
+  jobConcurrency: number;
+  /** Parallel rows inside a 25-row batch. Default 6, cap 12. */
+  rowConcurrency: number;
+  getleadsRps: number;
+  apifyConcurrency: number;
+  aiarkConcurrency: number;
+  fullenrichConcurrency: number;
   sampleMaxRows: number;
   exportBucket: string;
   exportTtlSeconds: number;
@@ -96,6 +116,42 @@ export function loadConfig(): Config {
     defaultCostCeilingUsd: num("LEADPIPE_COST_CEILING_USD", 0),
     pollIntervalMs: num("LEADPIPE_POLL_MS", 2000),
     heartbeatIntervalMs: num("LEADPIPE_HEARTBEAT_MS", 15000),
+    jobConcurrency: clampInt(
+      num("LEADPIPE_JOB_CONCURRENCY", JOB_CONCURRENCY_DEFAULT),
+      JOB_CONCURRENCY_DEFAULT,
+      1,
+      JOB_CONCURRENCY_CAP,
+    ),
+    rowConcurrency: clampInt(
+      num("LEADPIPE_ROW_CONCURRENCY", ROW_CONCURRENCY_DEFAULT),
+      ROW_CONCURRENCY_DEFAULT,
+      1,
+      ROW_CONCURRENCY_CAP,
+    ),
+    getleadsRps: clampInt(
+      num("GETLEADS_RPS", GETLEADS_RPS_DEFAULT),
+      GETLEADS_RPS_DEFAULT,
+      1,
+      20,
+    ),
+    apifyConcurrency: clampInt(
+      num("APIFY_CONCURRENCY", APIFY_CONCURRENCY_DEFAULT),
+      APIFY_CONCURRENCY_DEFAULT,
+      1,
+      32,
+    ),
+    aiarkConcurrency: clampInt(
+      num("AIARK_CONCURRENCY", AIARK_CONCURRENCY_DEFAULT),
+      AIARK_CONCURRENCY_DEFAULT,
+      1,
+      32,
+    ),
+    fullenrichConcurrency: clampInt(
+      num("FULLENRICH_CONCURRENCY", FULLENRICH_CONCURRENCY_DEFAULT),
+      FULLENRICH_CONCURRENCY_DEFAULT,
+      1,
+      32,
+    ),
     sampleMaxRows: 10,
     exportBucket: process.env.LEADPIPE_EXPORT_BUCKET ?? "lp-exports",
     exportTtlSeconds: num("LEADPIPE_EXPORT_TTL_SECONDS", 86400),

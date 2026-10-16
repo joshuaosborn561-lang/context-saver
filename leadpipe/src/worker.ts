@@ -3,6 +3,12 @@ import type { Config } from "./config.js";
 import type { Db } from "./db/client.js";
 import { claimQueuedJobs } from "./db/client.js";
 import { executeJob } from "./jobs/runner.js";
+import {
+  JOB_CONCURRENCY_CAP,
+  JOB_CONCURRENCY_DEFAULT,
+  clampInt,
+} from "./lib/concurrency.js";
+import { createJobPoller } from "./lib/job_poller.js";
 import { createVendors } from "./vendors/index.js";
 import { createServices } from "./services.js";
 import { createHttpMcpHandler } from "./mcp/server.js";
@@ -18,8 +24,12 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
   const vendors = createVendors(config);
   const services = createServices(db, config);
   const handleMcp = createHttpMcpHandler(db, config);
-  let running = false;
-  let stopping = false;
+  const jobConcurrency = clampInt(
+    config.jobConcurrency,
+    JOB_CONCURRENCY_DEFAULT,
+    1,
+    JOB_CONCURRENCY_CAP,
+  );
 
   if (config.mcpAuthToken && !config.mcpAllowUnauthenticated) {
     console.error("[leadpipe] /mcp auth enabled (LEADPIPE_MCP_TOKEN)");
@@ -170,34 +180,41 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
   server.listen(config.port, "0.0.0.0", () => {
     console.error(`[leadpipe] listening on 0.0.0.0:${config.port}`);
     console.error(`[leadpipe] MCP URL path: /mcp`);
+    console.error(
+      `[leadpipe] job_concurrency=${jobConcurrency} row_concurrency=${config.rowConcurrency}`,
+    );
   });
 
-  const poll = async () => {
-    if (stopping || running) return;
-    running = true;
-    try {
-      const jobs = await claimQueuedJobs(db, 1);
-      for (const job of jobs) {
-        console.error(
-          `[leadpipe] executing job ${job.id} kind=${job.kind} client=${job.client_tag}`,
-        );
-        await executeJob({ db, config, vendors, job });
-        console.error(`[leadpipe] finished job ${job.id}`);
-      }
-    } catch (err) {
-      console.error("[leadpipe] poll error", err);
-    } finally {
-      running = false;
-    }
-  };
+  const poller = createJobPoller({
+    concurrency: jobConcurrency,
+    claim: (free) => claimQueuedJobs(db, free), // FOR UPDATE SKIP LOCKED RPC
+    execute: async (job) => {
+      console.error(
+        `[leadpipe] executing job ${job.id} kind=${job.kind} client=${job.client_tag}`,
+      );
+      await executeJob({ db, config, vendors, job });
+      console.error(`[leadpipe] finished job ${job.id}`);
+    },
+    onError: (err, job) => {
+      console.error(
+        job
+          ? `[leadpipe] job ${job.id} error`
+          : "[leadpipe] poll error",
+        err,
+      );
+    },
+  });
 
-  const timer = setInterval(poll, config.pollIntervalMs);
-  void poll();
+  const timer = setInterval(() => {
+    void poller.tick();
+  }, config.pollIntervalMs);
+  void poller.tick();
 
   const shutdown = () => {
-    stopping = true;
     clearInterval(timer);
-    server.close();
+    void poller.drain().finally(() => {
+      server.close();
+    });
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
