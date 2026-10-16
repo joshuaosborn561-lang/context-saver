@@ -18,6 +18,7 @@ export const CANONICAL_FIELDS = [
   "title",
   "company_name",
   "company_domain",
+  "city",
   "state",
   "industry",
   "employee_range",

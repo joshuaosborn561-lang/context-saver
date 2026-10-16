@@ -22,6 +22,12 @@ import {
   resolveColumnMap,
   rowPassesFilters,
 } from "../src/lib/csv_headers.js";
+import {
+  escapeCsvField,
+  parseSimpleFilterSql,
+  resolveExportWhere,
+  toCsv,
+} from "../src/lib/csv_format.js";
 import { parseCsv, parseTabularFile } from "../src/lib/csv_download.js";
 import {
   companyMatches,
@@ -303,6 +309,7 @@ describe("csv header dialects", () => {
       assert.equal(r.map.title, "Current Job Title");
       // Bare getleads slice without geo/firmographics → surface unresolved
       assert.deepEqual(r.unresolved_optional, [
+        "city",
         "state",
         "industry",
         "employee_range",
@@ -319,6 +326,7 @@ describe("csv header dialects", () => {
       "Current Job Title",
       "Company Name",
       "Company Domain",
+      "Contact City",
       "Contact State",
       "Work State",
       "Company Industry (LinkedIn)",
@@ -328,6 +336,7 @@ describe("csv header dialects", () => {
     assert.equal(r.ok, true);
     if (r.ok) {
       assert.equal(r.dialect, "getleads");
+      assert.equal(r.map.city, "Contact City");
       assert.equal(r.map.state, "Contact State");
       assert.equal(r.map.industry, "Company Industry (LinkedIn)");
       assert.equal(r.map.employee_range, "Employee Count Range");
@@ -337,6 +346,7 @@ describe("csv header dialects", () => {
         {
           Email: "a@acme.com",
           "Company Domain": "acme.com",
+          "Contact City": "Austin",
           "Contact State": "TX",
           "Work State": "CA",
           "Company Industry (LinkedIn)": "Computer Software",
@@ -344,9 +354,35 @@ describe("csv header dialects", () => {
         },
         r.map,
       );
+      assert.equal(row.city, "Austin");
       assert.equal(row.state, "TX");
       assert.equal(row.industry, "Computer Software");
       assert.equal(row.employee_range, "51-200");
+    }
+  });
+
+  it("maps Contact City / Contact State from minimal getleads headers", () => {
+    const r = resolveColumnMap([
+      "Email",
+      "Contact City",
+      "Contact State",
+      "Company Domain",
+    ]);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.map.city, "Contact City");
+      assert.equal(r.map.state, "Contact State");
+      const row = mapRawRow(
+        {
+          Email: "x@y.com",
+          "Company Domain": "y.com",
+          "Contact City": "Denver",
+          "Contact State": "CO",
+        },
+        r.map,
+      );
+      assert.equal(row.city, "Denver");
+      assert.equal(row.state, "CO");
     }
   });
 
@@ -373,6 +409,7 @@ describe("csv header dialects", () => {
         title: null,
         company_name: "Company Name",
         company_domain: "Company Domain",
+        city: null,
         state: null,
         industry: null,
         employee_range: null,
@@ -400,5 +437,45 @@ describe("csv parse", () => {
       assert.equal(p.rows.length, 1);
       assert.equal(p.rows[0]!.Email, "a@b.com");
     }
+  });
+});
+
+describe("csv export format", () => {
+  it("quotes commas and round-trips company names", () => {
+    const csv = toCsv(
+      [{ email: "a@b.com", company_name: "Acme, Inc.", city: "Austin" }],
+      ["email", "company_name", "city"],
+    );
+    assert.equal(
+      csv,
+      'email,company_name,city\na@b.com,"Acme, Inc.",Austin',
+    );
+    assert.equal(escapeCsvField('say "hi"'), '"say ""hi"""');
+    assert.deepEqual(parseSimpleFilterSql("ev_status = 'sendable'"), {
+      ev_status: "sendable",
+    });
+    assert.deepEqual(parseSimpleFilterSql("band = 'A' AND mail_class = '1'"), {
+      band: "A",
+      mail_class: "1",
+    });
+    const w = resolveExportWhere({ segment: "owner" }, "ev_status = 'sendable'");
+    assert.equal(w.ok, true);
+    if (w.ok) {
+      assert.deepEqual(w.preds, { segment: "owner", ev_status: "sendable" });
+    }
+  });
+
+  it("exports exactly requested columns in order", () => {
+    const csv = toCsv(
+      [{ email: "a@b.com", city: "Austin", state: "TX", extra: "drop" }],
+      ["email", "city"],
+    );
+    assert.equal(csv, "email,city\na@b.com,Austin");
+  });
+
+  it("rejects unsafe filter_sql", () => {
+    assert.equal(parseSimpleFilterSql("ev_status = sendable; drop table"), null);
+    const w = resolveExportWhere(undefined, "1=1");
+    assert.equal(w.ok, false);
   });
 });

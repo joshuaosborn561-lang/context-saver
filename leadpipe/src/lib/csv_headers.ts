@@ -16,7 +16,7 @@ export type ColumnResolution =
       dialect: string;
       headers: string[];
       /** Optional firmographic/geo fields that did not map (for job warnings). */
-      unresolved_optional: Array<"state" | "industry" | "employee_range">;
+      unresolved_optional: Array<"city" | "state" | "industry" | "employee_range">;
     }
   | {
       ok: false;
@@ -85,6 +85,14 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "website domain",
     "primary_domain",
     "primary domain",
+  ],
+  city: [
+    // Prefer contact city (getleads) over bare "city"
+    "contact city",
+    "city",
+    "company city",
+    "personal city",
+    "location city",
   ],
   state: [
     // Prefer contact/work geography (getleads) over bare "state"
@@ -242,7 +250,7 @@ export function resolveColumnMap(
   // Firmographics / geo are optional for ingest success, but missing mappings
   // on known dialects are a recurring bug — surface them for the job summary.
   const unresolved_optional = (
-    ["state", "industry", "employee_range"] as const
+    ["city", "state", "industry", "employee_range"] as const
   ).filter((f) => !map[f]);
 
   return {
@@ -261,6 +269,7 @@ export type CanonicalRow = {
   title: string | null;
   company_name: string | null;
   company_domain: string | null;
+  city: string | null;
   state: string | null;
   industry: string | null;
   employee_range: string | null;
@@ -317,6 +326,7 @@ export function mapRawRow(
     title: cell(row, map.title),
     company_name: cell(row, map.company_name),
     company_domain,
+    city: cell(row, map.city),
     state: cell(row, map.state),
     industry: cell(row, map.industry),
     employee_range: cell(row, map.employee_range),

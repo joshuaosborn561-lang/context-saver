@@ -124,6 +124,7 @@ export async function startWorker(db: Db, config: Config): Promise<void> {
             body.approve_cost_usd !== undefined
               ? Number(body.approve_cost_usd)
               : undefined,
+          force: body.force === true,
         });
         json(res, 200, result);
         return;

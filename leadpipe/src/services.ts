@@ -14,6 +14,7 @@ import {
   ingestedLeadsTableName,
   validateIngestCsvParams,
 } from "./lib/ingest_csv_params.js";
+import { resolveExportWhere, toCsv } from "./lib/csv_format.js";
 import { assertClientTag } from "./lib/client_tag.js";
 import { createClient } from "@supabase/supabase-js";
 
@@ -37,6 +38,8 @@ export interface Services {
     client_tag: string;
     params?: Record<string, unknown>;
     approve_cost_usd?: number;
+    /** Bypass idempotency — always enqueue a new job (same params_hash). */
+    force?: boolean;
   }): Promise<{
     job_id: string;
     status: string;
@@ -86,6 +89,12 @@ export interface Services {
     filter?: Partial<LeadFilter>;
     format?: "csv" | "jsonl";
     table?: "contacts" | "ingested_leads";
+    /** Exact columns to export. Omit = every live column on the table. */
+    columns?: string[];
+    /** Equality predicates, e.g. { ev_status: "sendable" }. */
+    where?: Record<string, unknown>;
+    /** Simple filter_sql: "ev_status = 'sendable'" (AND-chained equalities). */
+    filter_sql?: string;
   }): Promise<{ signed_url: string; row_count: number; export_id: string; expires_at: string }>;
 
   /** Provision client_<tag> schema + registry row. Idempotent. */
@@ -227,20 +236,22 @@ export function createServices(db: Db, config: Config): Services {
       const params = sanitizeParams(input.job_kind, input.params ?? {});
       const params_hash = hashParams({ ...params, client_tag });
 
-      const existing = await findIdempotentJob(
-        db,
-        client_tag,
-        input.job_kind,
-        params_hash,
-      );
-      if (existing && existing.status !== "failed" && existing.status !== "cost_blocked") {
-        return {
-          job_id: existing.id,
-          status: existing.status,
-          estimated_cost_usd: Number(existing.cost_estimate_usd ?? 0),
-          attached_existing: true,
-          client_ensured,
-        };
+      if (!input.force) {
+        const existing = await findIdempotentJob(
+          db,
+          client_tag,
+          input.job_kind,
+          params_hash,
+        );
+        if (existing && existing.status !== "failed" && existing.status !== "cost_blocked") {
+          return {
+            job_id: existing.id,
+            status: existing.status,
+            estimated_cost_usd: Number(existing.cost_estimate_usd ?? 0),
+            attached_existing: true,
+            client_ensured,
+          };
+        }
       }
 
       const estimate = await estimateForKind(
@@ -404,7 +415,7 @@ export function createServices(db: Db, config: Config): Services {
         const { data, error } = await db
           .from(tname)
           .select(
-            "first_name, last_name, email, title, company_name, company_domain, state, industry, employee_range, source_label, ingested_at",
+            "first_name, last_name, email, title, company_name, company_domain, city, state, industry, employee_range, source_label, ingested_at",
           )
           .order("ingested_at", { ascending: false })
           .limit(n);
@@ -439,37 +450,70 @@ export function createServices(db: Db, config: Config): Services {
         ...input.filter,
       };
       const exportTable = input.table ?? "contacts";
+      const tname =
+        exportTable === "ingested_leads"
+          ? ingestedLeadsTableName(client_tag)
+          : "contacts";
+
+      const liveColumns = await listTableColumns(config, "lp", tname);
+      if (!liveColumns.length) {
+        throw new Error(`No columns found for lp.${tname}`);
+      }
+
+      let columns: string[];
+      if (input.columns != null) {
+        if (!Array.isArray(input.columns) || input.columns.length === 0) {
+          throw new Error(
+            "lp_export columns must be a non-empty string array when provided",
+          );
+        }
+        columns = input.columns.map((c) => String(c).trim()).filter(Boolean);
+        const liveSet = new Set(liveColumns);
+        const missing = columns.filter((c) => !liveSet.has(c));
+        if (missing.length) {
+          throw new Error(
+            `lp_export columns not found on lp.${tname}: ${missing.join(", ")}. ` +
+              `Live columns: ${liveColumns.join(", ")}`,
+          );
+        }
+      } else {
+        columns = liveColumns;
+      }
+
+      const whereRes = resolveExportWhere(input.where, input.filter_sql);
+      if (!whereRes.ok) throw new Error(whereRes.error);
+      const wherePreds = whereRes.preds;
+      if (Object.keys(wherePreds).length) {
+        const liveSet = new Set(liveColumns);
+        const bad = Object.keys(wherePreds).filter((c) => !liveSet.has(c));
+        if (bad.length) {
+          throw new Error(
+            `lp_export where/filter_sql columns not found on lp.${tname}: ${bad.join(", ")}`,
+          );
+        }
+      }
+
+      const selectList = columns.join(", ");
 
       // Stream rows in pages into a string — never return content to MCP caller
       const rows: Record<string, unknown>[] = [];
       let from = 0;
       const page = 1000;
       for (;;) {
-        let data: Record<string, unknown>[] | null = null;
-        let error: { message: string } | null = null;
+        let q = db.from(tname).select(selectList);
         if (exportTable === "ingested_leads") {
-          const tname = ingestedLeadsTableName(client_tag);
-          const res = await db
-            .from(tname)
-            .select(
-              "first_name, last_name, email, title, company_name, company_domain, state, industry, employee_range, source_label, source_url_hash, ingested_at",
-            )
-            .order("ingested_at", { ascending: false })
-            .range(from, from + page - 1);
-          data = (res.data as Record<string, unknown>[] | null) ?? null;
-          error = res.error;
+          q = q.order("ingested_at", { ascending: false });
         } else {
-          let q = db
-            .from("contacts")
-            .select(
-              "domain, first_name, last_name, job_title, email, email_status, phone, linkedin_url, source_tier, source_tool, is_dm, suppressed",
-            );
           q = applyContactFilter(q, filter);
-          const res = await q.range(from, from + page - 1);
-          data = (res.data as Record<string, unknown>[] | null) ?? null;
-          error = res.error;
         }
-        if (error) throw new Error(error.message);
+        for (const [col, val] of Object.entries(wherePreds)) {
+          if (val === null) q = q.is(col, null);
+          else q = q.eq(col, val);
+        }
+        const res = await q.range(from, from + page - 1);
+        if (res.error) throw new Error(res.error.message);
+        const data =
+          (res.data as unknown as Record<string, unknown>[] | null) ?? null;
         if (!data?.length) break;
         rows.push(...data);
         if (data.length < page) break;
@@ -478,8 +522,8 @@ export function createServices(db: Db, config: Config): Services {
 
       const body =
         format === "jsonl"
-          ? rows.map((r) => JSON.stringify(r)).join("\n")
-          : toCsv(rows);
+          ? rows.map((r) => JSON.stringify(pickColumns(r, columns))).join("\n")
+          : toCsv(rows, columns);
 
       const exportId = crypto.randomUUID();
       const path = `${client_tag}/${exportId}.${format === "jsonl" ? "jsonl" : "csv"}`;
@@ -502,7 +546,12 @@ export function createServices(db: Db, config: Config): Services {
         await db.from("exports").insert({
           id: exportId,
           client_tag,
-          filter,
+          filter: {
+            ...filter,
+            columns,
+            where: wherePreds,
+            table: exportTable,
+          },
           format,
           row_count: rows.length,
           storage_path: path,
@@ -524,7 +573,12 @@ export function createServices(db: Db, config: Config): Services {
       await db.from("exports").insert({
         id: exportId,
         client_tag,
-        filter,
+        filter: {
+          ...filter,
+          columns,
+          where: wherePreds,
+          table: exportTable,
+        },
         format,
         row_count: rows.length,
         storage_path: path,
@@ -539,6 +593,36 @@ export function createServices(db: Db, config: Config): Services {
       };
     },
   };
+}
+
+async function listTableColumns(
+  config: Config,
+  schema: string,
+  table: string,
+): Promise<string[]> {
+  const publicDb = createClient(config.supabaseUrl, config.supabaseServiceKey, {
+    auth: { persistSession: false },
+  });
+  const { data, error } = await publicDb.rpc("lp_table_columns", {
+    p_schema: schema,
+    p_table: table,
+  });
+  if (error) {
+    throw new Error(
+      `lp_table_columns failed: ${error.message}. Apply migration ingested_leads_city_and_export_columns.`,
+    );
+  }
+  if (!Array.isArray(data)) return [];
+  return data.map((c) => String(c));
+}
+
+function pickColumns(
+  row: Record<string, unknown>,
+  columns: string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const c of columns) out[c] = row[c] ?? null;
+  return out;
 }
 
 async function ensureClientRpc(
@@ -630,18 +714,4 @@ function estimateEta(job: JobRow): number | null {
   const perRow = elapsed / job.rows_done;
   const remaining = job.rows_total - job.rows_done;
   return Math.round((remaining * perRow) / 1000);
-}
-
-function toCsv(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return "";
-  const cols = Object.keys(rows[0]!);
-  const escape = (v: unknown) => {
-    const s = v == null ? "" : String(v);
-    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-  };
-  return [
-    cols.join(","),
-    ...rows.map((r) => cols.map((c) => escape(r[c])).join(",")),
-  ].join("\n");
 }
